@@ -7,6 +7,6 @@
 
 export const API_CONFIG = {
   BASE_URL: __DEV__
-    ? "http://localhost:8080"
+    ? "http://192.168.0.10:8080"
     : "https://feclaw.lizidaren.cn",
 } as const;
