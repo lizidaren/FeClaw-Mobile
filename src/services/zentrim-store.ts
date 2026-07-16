@@ -41,7 +41,9 @@ class ZentrimStore {
     this.update({ loading: true, error: null });
     try {
       const resp = await api.getEntries(1, DEFAULT_PAGE_SIZE);
-      this.update({ entries: resp.items, loading: false });
+      // resp 可能是数组（直接返回 entries）或 {items, total} 格式
+      const entries = Array.isArray(resp) ? resp : resp?.items ?? [];
+      this.update({ entries, loading: false });
     } catch (err) {
       const message = err instanceof Error ? err.message : "获取失败";
       this.update({ error: message, loading: false });

@@ -17,8 +17,8 @@ describe('zentrimStore', () => {
       { id: '1', title: '笔记一', created_at: '2026-07-16T10:00:00Z', status: 'active' },
     ];
     const apiModule = require('../../src/services/api-client');
-    // getEntries returns { items: [...] }
-    jest.spyOn(apiModule.api, 'getEntries').mockResolvedValueOnce({ items: mockEntries, total: 1, page: 1, page_size: 20 });
+    // Backend 返回的是数组（不是 {items: [...]}），store 做了兼容
+    jest.spyOn(apiModule.api, 'getEntries').mockResolvedValueOnce(mockEntries);
 
     await zentrimStore.fetchEntries();
 
