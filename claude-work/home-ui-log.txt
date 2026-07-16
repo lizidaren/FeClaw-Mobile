@@ -1,0 +1,8 @@
+All tasks complete. Summary:
+
+- **`HomeScreen.tsx`** — Rewrote with greeting (`getGreeting()` 6 时间段)、💡 提示行、三张卡片（待办/完成度/全部）、底部蓝色 + 按钮、"注意到" Modal（三个按钮）、时间线 Sheet（3 条 mock 笔记，07-09 / 07-08，✓已处理 / ⏳转换中 状态）
+- **`ChatTab.tsx`** — 已有占位页，未改动
+- **`AppNavigator.tsx`** — 用 `createNativeStackNavigator`（新装 `@react-navigation/native-stack`）+ `createBottomTabNavigator`，导出 `RootStackParamList` / `TabParamList`
+- **`App.tsx`** — 改为 `SafeAreaProvider` + `<AppNavigator />`
+- **`npx tsc --noEmit`** — 退出 0，无类型错误
+- **`claude-work/home-ui-result.md`** — 已写入详细结果

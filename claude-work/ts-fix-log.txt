@@ -1,0 +1,9 @@
+全部 8 项 TypeScript 错误已修复，`npx tsc --noEmit` 退出码 0。结果摘要写入 `claude-work/ts-fix-result.md`。
+
+主要修复：
+- **CanvasEngine**: 私有字段 `undo = new UndoManager()` 重命名为 `undoManager`，消除与方法 `undo()` 的 TS2300 重复标识符（连带修了 CanvasScreen 的 "private undo" 错误）
+- **Skia 2.x API 迁移**: `MakeFromEncoded` → `MakeImageFromEncoded`（3 处）；`ctx.rotate(angle)` → `ctx.rotate(angle, 0, 0)`；`paint.setColor(number)` → `paint.setColor(Skia.Color(number))`（SkColor 现在是 Float32Array）
+- **ZentrimCanvas**: `Pinch().onUpdate` → `onChange`（`scaleChange` 仅在 change 事件 payload 中）
+- **CanvasScreen**: `pageId` / `metadata` / `info` 改为可选并提供默认值，让 `App.tsx` 可裸渲染
+- **react-native-image-picker**: `npm install` 安装（带 TS 类型），`launchCamera` 直接可用，无需注释源码
+- `types.ts` 数据模型未改动（按要求）

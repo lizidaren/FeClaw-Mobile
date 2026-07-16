@@ -1,0 +1,45 @@
+import React, { useEffect } from "react";
+import { ActivityIndicator, StatusBar, View } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import { AppNavigator } from "./src/navigation/AppNavigator";
+import { authStore, useAuth } from "./src/services/auth-store";
+import { zentrimStore } from "./src/services/zentrim-store";
+
+/** 根组件：负责启动时恢复 token，再根据登录态选择渲染 Login 或主导航 */
+const App: React.FC = () => {
+  useEffect(() => {
+    void authStore.hydrate();
+  }, []);
+
+  const isLoggedIn = useAuth();
+
+  // hydrate 完成后才显示页面（避免一闪登录页）
+  if (!authStore.isInitialized()) {
+    return (
+      <View style={{ flex: 1, justifyContent: "center", backgroundColor: "#F5F5F0" }}>
+        <ActivityIndicator size="large" color="#1976d2" />
+      </View>
+    );
+  }
+
+  return (
+    <SafeAreaProvider>
+      <StatusBar barStyle="dark-content" backgroundColor="#F5F5F0" />
+      <RootRouter isLoggedIn={isLoggedIn} />
+    </SafeAreaProvider>
+  );
+};
+
+/** 根据登录态选 navigator（避免把 navigator 写在条件内导致 Stack 重建） */
+function RootRouter({ isLoggedIn }: { isLoggedIn: boolean }) {
+  useEffect(() => {
+    // 登出时清空 zentrim 缓存，避免下个用户看到上一位的 entries
+    if (!isLoggedIn) {
+      zentrimStore.reset();
+    }
+  }, [isLoggedIn]);
+
+  return <AppNavigator isLoggedIn={isLoggedIn} />;
+}
+
+export default App;

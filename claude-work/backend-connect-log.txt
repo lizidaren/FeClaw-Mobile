@@ -1,0 +1,13 @@
+Script started on 2026-07-16 15:32:04+08:00 [<not executed on terminal>]
+Done. Summary:
+
+- **All 8 tasks already implemented** in the codebase (api-client, auth-store, zentrim-store, HomeScreen, config, types, App.tsx, LoginScreen) — no edits needed
+- **`npx tsc --noEmit` ✅ Exit 0** (zero errors, 739 files processed)
+- **Result file** at `claude-work/backend-connect-result.md` (already populated, retained)
+[?1006l[?1003l[?1002l[?1000l[<u[?1004l[?2004l[?25h]9;4;0;]0;[?25h
+Script done on 2026-07-16 15:33:41+08:00 [COMMAND_EXIT_CODE="0"]
+��清缓存
+- HomeScreen `useFocusEffect` 触发 fetch；后端不可达回退到 MOCK_NOTES
+- App.tsx 用 `key={isLoggedIn ? "main" : "auth"}` 强制重建 NavigationContainer
+
+报告已写入 `/home/lch/Projects/FeClaw-Mobile/claude-work/backend-connect-result.md`。
