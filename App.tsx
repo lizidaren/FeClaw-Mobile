@@ -1,5 +1,5 @@
-import React, { useEffect } from "react";
-import { ActivityIndicator, StatusBar, View } from "react-native";
+import React, { useEffect, useState } from "react";
+import { ActivityIndicator, StatusBar, Text, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AppNavigator } from "./src/navigation/AppNavigator";
 import { authStore, useAuth } from "./src/services/auth-store";
@@ -7,17 +7,20 @@ import { zentrimStore } from "./src/services/zentrim-store";
 
 /** 根组件：负责启动时恢复 token，再根据登录态选择渲染 Login 或主导航 */
 const App: React.FC = () => {
+  const [hydrated, setHydrated] = useState(false);
+
   useEffect(() => {
-    void authStore.hydrate();
+    authStore.hydrate().then(() => setHydrated(true));
   }, []);
 
   const isLoggedIn = useAuth();
 
   // hydrate 完成后才显示页面（避免一闪登录页）
-  if (!authStore.isInitialized()) {
+  if (!hydrated) {
     return (
-      <View style={{ flex: 1, justifyContent: "center", backgroundColor: "#F5F5F0" }}>
+      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#F5F5F0" }}>
         <ActivityIndicator size="large" color="#1976d2" />
+        <Text style={{ marginTop: 16, color: "#999", fontSize: 14 }}>初始化中...</Text>
       </View>
     );
   }
