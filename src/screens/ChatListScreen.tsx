@@ -71,8 +71,7 @@ export function ChatListScreen() {
   }, [groups.length]);
 
   const handleNew = useCallback(() => {
-    chatStore.createNewSession();
-    navigation.navigate("ChatSession", { sessionId: null });
+    navigation.navigate("CreateAgent");
   }, [navigation]);
 
   const handleOpenPrivate = useCallback(

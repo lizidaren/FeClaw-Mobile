@@ -286,3 +286,30 @@ export interface AgentInfo {
   description?: string;
   avatar_url?: string;
 }
+
+/** ── Agent 模板 / 创建 ───────────────────────────────── */
+
+/** Agent 模板（创建向导的预置模板） */
+export interface AgentTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  /** 单个 emoji 或 unicode 字符，作为模板的视觉图标 */
+  icon?: string;
+  /** 模板分类（"通用" / "教育" / "编程" 等），用于分组展示 */
+  category?: string;
+}
+
+/** 创建 Agent 请求体 */
+export interface CreateAgentRequest {
+  name: string;
+  /** 可选：基于某个模板创建 */
+  template_id?: string;
+}
+
+/** 创建 Agent 响应 */
+export interface CreatedAgent {
+  /** Agent hash（4~8 位十六进制） */
+  hash: string;
+  name: string;
+}

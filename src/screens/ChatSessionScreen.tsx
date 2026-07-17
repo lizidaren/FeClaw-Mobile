@@ -211,6 +211,7 @@ export function ChatSessionScreen() {
   const [showAgentPicker, setShowAgentPicker] = useState(false);
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [mentionQuery, setMentionQuery] = useState("");
+  const [showMenu, setShowMenu] = useState(false);
   const listRef = useRef<FlatList<ChatMessage>>(null);
 
   // 进入会话时拉一次详情 + 拉一次 Agent 列表
@@ -231,6 +232,9 @@ export function ChatSessionScreen() {
       }
     }, [initialSessionId, messages.length, streaming]),
   );
+
+  /** 是否在等待会话就绪（没有 sessionId 时为 true） */
+  const waitingForSession = initialSessionId === null;
 
   useEffect(() => {
     if (messages.length > 0 || streamingContent.length > 0) {
@@ -331,10 +335,15 @@ export function ChatSessionScreen() {
       chatStore.getState().pendingImages.length > 0 ||
       chatStore.getState().pendingFiles.length > 0;
     if ((!trimmed && !hasAttach) || streaming) return;
+    // 等待会话就绪时禁止发送：避免 null sessionId 打到后端产生 404
+    if (waitingForSession) {
+      Alert.alert("提示", "会话还没准备好，请稍候");
+      return;
+    }
     setInput("");
     setShowMentionPicker(false);
     void chatStore.sendMessage(trimmed, currentSessionId);
-  }, [input, streaming, currentSessionId]);
+  }, [input, streaming, currentSessionId, waitingForSession]);
 
   const handleDelete = useCallback(() => {
     if (!currentSessionId) {
@@ -353,6 +362,26 @@ export function ChatSessionScreen() {
       },
     ]);
   }, [currentSessionId, navigation]);
+
+  /** 三点菜单的"会话信息"占位动作 */
+  const handleShowInfo = useCallback(() => {
+    // 占位：暂时只打日志，后续可跳详情页 / 弹 Modal
+    // eslint-disable-next-line no-console
+    console.log("[ChatSession] session info", {
+      sessionId: currentSessionId,
+      topic: currentTopic,
+      agentName: currentAgentName,
+      messageCount: messages.length,
+    });
+  }, [currentSessionId, currentTopic, currentAgentName, messages.length]);
+
+  const handleOpenMenu = useCallback(() => {
+    setShowMenu(true);
+  }, []);
+
+  const handleCloseMenu = useCallback(() => {
+    setShowMenu(false);
+  }, []);
 
   const headerTitle = useMemo(() => {
     if (currentTopic) return currentTopic;
@@ -410,12 +439,12 @@ export function ChatSessionScreen() {
           )}
         </Pressable>
         <Pressable
-          onPress={handleDelete}
+          onPress={handleOpenMenu}
           hitSlop={12}
-          style={styles.deleteBtn}
-          accessibilityLabel="删除会话"
+          style={styles.menuBtn}
+          accessibilityLabel="更多操作"
         >
-          <Text style={styles.deleteIcon}>🗑️</Text>
+          <Text style={styles.menuIcon}>⋮</Text>
         </Pressable>
       </View>
 
@@ -444,6 +473,21 @@ export function ChatSessionScreen() {
             <MessageBubble msg={item} onPreviewImage={setPreviewUri} />
           )}
           contentContainerStyle={styles.listContent}
+          ListEmptyComponent={
+            waitingForSession ? (
+              <View style={styles.emptyWrap}>
+                <ActivityIndicator color="#1976d2" />
+                <Text style={styles.emptyText}>会话准备中…</Text>
+                <Text style={styles.emptyHint}>请先在聊天列表中创建或选择 Agent</Text>
+              </View>
+            ) : (
+              <View style={styles.emptyWrap}>
+                <Text style={styles.emptyEmoji}>💬</Text>
+                <Text style={styles.emptyText}>开始一次新对话吧</Text>
+                <Text style={styles.emptyHint}>在下方输入第一条消息</Text>
+              </View>
+            )
+          }
           ListFooterComponent={
             streaming ? (
               <StreamingBubble content={streamingContent} />
@@ -508,7 +552,7 @@ export function ChatSessionScreen() {
             disabled={streaming}
             accessibilityLabel="选择图片"
           >
-            <Text style={styles.attachBtnText}>📷</Text>
+            <Text style={styles.attachBtnText}>◻</Text>
           </Pressable>
           <Pressable
             onPress={handlePickFile}
@@ -517,15 +561,15 @@ export function ChatSessionScreen() {
             disabled={streaming}
             accessibilityLabel="选择文件"
           >
-            <Text style={styles.attachBtnText}>📎</Text>
+            <Text style={styles.attachBtnText}>≡</Text>
           </Pressable>
           <TextInput
             style={styles.textInput}
             value={input}
             onChangeText={handleChangeText}
-            placeholder="说点什么…"
+            placeholder={waitingForSession ? "会话准备中…" : "说点什么…"}
             placeholderTextColor="#999"
-            editable={!streaming}
+            editable={!streaming && !waitingForSession}
             multiline
             maxLength={2000}
             onSubmitEditing={handleSend}
@@ -631,6 +675,60 @@ export function ChatSessionScreen() {
               resizeMode="contain"
             />
           )}
+        </Pressable>
+      </Modal>
+
+      {/* 三点菜单 ActionSheet */}
+      <Modal
+        visible={showMenu}
+        transparent
+        animationType="fade"
+        onRequestClose={handleCloseMenu}
+      >
+        <Pressable style={styles.menuBackdrop} onPress={handleCloseMenu}>
+          <View style={styles.actionSheet}>
+            <View style={styles.actionSheetHeader}>
+              <Text style={styles.actionSheetTitle}>{headerTitle}</Text>
+            </View>
+            <Pressable
+              style={({ pressed }) => [
+                styles.actionItem,
+                pressed && styles.actionItemPressed,
+              ]}
+              onPress={() => {
+                handleCloseMenu();
+                handleShowInfo();
+              }}
+              android_ripple={{ color: "#E0E0E0" }}
+            >
+              <Text style={styles.actionItemText}>会话信息</Text>
+            </Pressable>
+            <View style={styles.actionDivider} />
+            <Pressable
+              style={({ pressed }) => [
+                styles.actionItem,
+                styles.actionItemDanger,
+                pressed && styles.actionItemPressed,
+              ]}
+              onPress={() => {
+                handleCloseMenu();
+                handleDelete();
+              }}
+              android_ripple={{ color: "#FFCDD2" }}
+            >
+              <Text style={styles.actionItemTextDanger}>删除会话</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [
+                styles.actionCancel,
+                pressed && styles.actionItemPressed,
+              ]}
+              onPress={handleCloseMenu}
+              android_ripple={{ color: "#E0E0E0" }}
+            >
+              <Text style={styles.actionCancelText}>取消</Text>
+            </Pressable>
+          </View>
         </Pressable>
       </Modal>
     </SafeAreaView>
@@ -879,6 +977,83 @@ const styles = StyleSheet.create({
   deleteIcon: {
     fontSize: 18,
   },
+  menuBtn: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  menuIcon: {
+    fontSize: 22,
+    color: "#1976d2",
+    fontWeight: "700",
+    lineHeight: 22,
+  },
+  menuBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    justifyContent: "flex-end",
+  },
+  actionSheet: {
+    backgroundColor: "rgba(255,255,255,0.98)",
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 24,
+  },
+  actionSheetHeader: {
+    paddingVertical: 8,
+    alignItems: "center",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#EEE",
+    marginBottom: 4,
+  },
+  actionSheetTitle: {
+    fontSize: 13,
+    color: "#666",
+    fontWeight: "600",
+  },
+  actionItem: {
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+  },
+  actionItemDanger: {
+    // 视觉权重由 text 颜色承担
+  },
+  actionItemPressed: {
+    backgroundColor: "rgba(0,0,0,0.05)",
+  },
+  actionItemText: {
+    fontSize: 16,
+    color: "#1a1a1a",
+    textAlign: "center",
+  },
+  actionItemTextDanger: {
+    fontSize: 16,
+    color: "#d32f2f",
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  actionDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#EEE",
+    marginVertical: 4,
+  },
+  actionCancel: {
+    marginTop: 8,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(0,0,0,0.05)",
+  },
+  actionCancelText: {
+    fontSize: 16,
+    color: "#1976d2",
+    fontWeight: "600",
+    textAlign: "center",
+  },
   errorBanner: {
     backgroundColor: "#FFEBEE",
     paddingHorizontal: 16,
@@ -893,6 +1068,27 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 12,
     flexGrow: 1,
+  },
+  emptyWrap: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 64,
+    paddingHorizontal: 24,
+  },
+  emptyEmoji: {
+    fontSize: 36,
+    marginBottom: 8,
+  },
+  emptyText: {
+    fontSize: 14,
+    color: "#666",
+    marginBottom: 4,
+  },
+  emptyHint: {
+    fontSize: 12,
+    color: "#999",
+    marginTop: 4,
   },
   senderName: {
     fontSize: 11,

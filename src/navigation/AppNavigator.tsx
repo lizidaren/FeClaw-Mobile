@@ -26,6 +26,7 @@ import { ChatListScreen } from "../screens/ChatListScreen";
 import { ChatSessionScreen } from "../screens/ChatSessionScreen";
 import { GroupChatSessionScreen } from "../screens/GroupChatSessionScreen";
 import { CanvasScreen } from "../screens/CanvasScreen";
+import { CreateAgentScreen } from "../screens/CreateAgentScreen";
 import { LoginScreen } from "../screens/LoginScreen";
 
 /** 底部 Tab 路由表 */
@@ -51,6 +52,8 @@ export type RootStackParamList = {
   GroupChatSession: GroupChatSessionParams;
   /** Canvas 页：传 entryId 打开已有条目；不传 → 新建空白画布 */
   Canvas: { entryId?: string } | undefined;
+  /** 创建 AI 向导：模板选择 + 手动输入两种模式 */
+  CreateAgent: undefined;
 };
 
 /** 未登录 Stack 路由表 */
@@ -103,6 +106,11 @@ function MainNavigator() {
         name="Canvas"
         component={CanvasScreen}
         options={{ presentation: "fullScreenModal" }}
+      />
+      <Stack.Screen
+        name="CreateAgent"
+        component={CreateAgentScreen}
+        options={{ presentation: "card" }}
       />
     </Stack.Navigator>
   );

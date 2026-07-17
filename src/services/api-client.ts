@@ -11,6 +11,7 @@
 import { API_CONFIG } from "./config";
 import type {
   AgentInfo,
+  AgentTemplate,
   AuthResponse,
   Block,
   CanvasData,
@@ -18,7 +19,9 @@ import type {
   ChatSessionInfo,
   ChatStreamEvent,
   ChatStreamRequest,
+  CreateAgentRequest,
   CreateEntryRequest,
+  CreatedAgent,
   EntryProcessStatus,
   GroupInfo,
   GroupMember,
@@ -546,6 +549,54 @@ export class ApiClient {
       "GET",
       `/api/agents/${encodeURIComponent(agentId)}`,
     );
+  }
+
+  // ── Agent 模板 / 创建 ─────────────────────────────────────
+
+  /**
+   * 拉取可用的 Agent 模板列表。
+   * 后端约定：`GET /api/console/templates` → `{templates: AgentTemplate[]}`。
+   * 兼容老后端：若返回的是裸数组，也直接透传。
+   */
+  async listTemplates(): Promise<AgentTemplate[]> {
+    const res = await this.request<
+      AgentTemplate[] | { templates: AgentTemplate[] }
+    >("GET", "/api/console/templates");
+    if (Array.isArray(res)) return res;
+    if (res && Array.isArray(res.templates)) return res.templates;
+    return [];
+  }
+
+  /**
+   * 基于模板（或裸名）创建一个新 Agent。
+   * - 优先尝试 `POST /api/console/agents`（新控制台接口）
+   * - 失败时降级到 `POST /api/user/agents`（老用户接口）
+   *
+   * 返回 `{hash, name}`，hash 是 4~8 位 hex 字符串。
+   */
+  async createAgent(
+    name: string,
+    templateId?: string,
+  ): Promise<CreatedAgent> {
+    const body: CreateAgentRequest = { name, template_id: templateId };
+    try {
+      return await this.request<CreatedAgent>(
+        "POST",
+        "/api/console/agents",
+        body,
+      );
+    } catch (err) {
+      // 降级到老接口：忽略 template_id，只传 name
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+        // 4xx 通常不是网络/接口不存在，向上抛
+        throw err;
+      }
+      return await this.request<CreatedAgent>(
+        "POST",
+        "/api/user/agents",
+        { name },
+      );
+    }
   }
 
   // ── Upload ─────────────────────────────────────────────────
