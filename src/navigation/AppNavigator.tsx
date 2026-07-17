@@ -5,15 +5,15 @@
  *   isLoggedIn === true:
  *     Stack
  *     ├── Main (TabNavigator)
- *     │   ├── ChatTab   "💬 聊天"
- *     │   └── ZentrimTab "📦 Zentrim"  ← 渲染 HomeScreen
- *     └── Canvas          (modal 风格全屏)
+ *     │   ├── ChatTab       "💬 聊天"      ← ChatListScreen
+ *     │   └── ZentrimTab    "📦 Zentrim"   ← HomeScreen
+ *     ├── ChatSession                    (Stack 顶层，私聊 / 多 Agent)
+ *     ├── GroupChatSession               (Stack 顶层，群聊)
+ *     └── Canvas                         (modal 风格全屏)
  *
  *   isLoggedIn === false:
  *     Stack
  *     └── Login (单页)
- *
- * 点 HomeScreen 底部 + 按钮 → navigation.navigate("Canvas")
  */
 
 import React from "react";
@@ -22,7 +22,9 @@ import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 
 import { HomeScreen } from "../screens/HomeScreen";
-import { ChatTab } from "../screens/ChatTab";
+import { ChatListScreen } from "../screens/ChatListScreen";
+import { ChatSessionScreen } from "../screens/ChatSessionScreen";
+import { GroupChatSessionScreen } from "../screens/GroupChatSessionScreen";
 import { CanvasScreen } from "../screens/CanvasScreen";
 import { LoginScreen } from "../screens/LoginScreen";
 
@@ -32,10 +34,23 @@ export type TabParamList = {
   ZentrimTab: undefined;
 };
 
+/** ChatSession 入参：null 表示新会话 */
+export type ChatSessionParams = {
+  sessionId: string | null;
+};
+
+/** GroupChatSession 入参：群 id */
+export type GroupChatSessionParams = {
+  groupId: string;
+};
+
 /** 已登录主 Stack 路由表 */
 export type RootStackParamList = {
   Main: undefined;
-  Canvas: undefined;
+  ChatSession: ChatSessionParams;
+  GroupChatSession: GroupChatSessionParams;
+  /** Canvas 页：传 entryId 打开已有条目；不传 → 新建空白画布 */
+  Canvas: { entryId?: string } | undefined;
 };
 
 /** 未登录 Stack 路由表 */
@@ -58,7 +73,7 @@ function MainTabs() {
     >
       <Tab.Screen
         name="ChatTab"
-        component={ChatTab}
+        component={ChatListScreen}
         options={{ tabBarLabel: "💬 聊天" }}
       />
       <Tab.Screen
@@ -74,6 +89,16 @@ function MainNavigator() {
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="Main" component={MainTabs} />
+      <Stack.Screen
+        name="ChatSession"
+        component={ChatSessionScreen}
+        options={{ presentation: "card" }}
+      />
+      <Stack.Screen
+        name="GroupChatSession"
+        component={GroupChatSessionScreen}
+        options={{ presentation: "card" }}
+      />
       <Stack.Screen
         name="Canvas"
         component={CanvasScreen}

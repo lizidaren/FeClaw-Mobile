@@ -11,7 +11,11 @@
 
 import { useSyncExternalStore } from "react";
 import { api } from "./api-client";
-import type { CreateEntryRequest, ZentrimEntry } from "../types/api";
+import type {
+  Block,
+  CreateEntryRequest,
+  ZentrimEntry,
+} from "../types/api";
 
 const DEFAULT_PAGE_SIZE = 50;
 
@@ -75,6 +79,153 @@ class ZentrimStore {
       const message = err instanceof Error ? err.message : "删除失败";
       this.update({ error: message });
       return false;
+    }
+  }
+
+  async archiveEntry(id: string): Promise<boolean> {
+    this.update({ error: null });
+    try {
+      const updated = await api.archiveEntry(id);
+      this.update({
+        entries: this.state.entries.map((e) =>
+          e.id === id ? updated : e,
+        ),
+      });
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "归档失败";
+      this.update({ error: message });
+      return false;
+    }
+  }
+
+  async unarchiveEntry(id: string): Promise<boolean> {
+    this.update({ error: null });
+    try {
+      const updated = await api.unarchiveEntry(id);
+      this.update({
+        entries: this.state.entries.map((e) =>
+          e.id === id ? updated : e,
+        ),
+      });
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "取消归档失败";
+      this.update({ error: message });
+      return false;
+    }
+  }
+
+  /**
+   * 拍照创建 Entry：上传图片 → 创建 entry → 保存 photo block → 触发管线。
+   * 失败时已创建的 entry 仍保留在列表中。
+   * 返回创建的 entry，失败返回 null。
+   */
+  async createPhotoEntry(
+    fileUri: string,
+    fileName: string,
+    mimeType: string,
+    onProgress?: (pct: number) => void,
+  ): Promise<ZentrimEntry | null> {
+    this.update({ loading: true, error: null });
+    try {
+      // 1. 上传图片
+      const uploaded = await api.uploadFile(
+        fileUri,
+        fileName,
+        mimeType,
+        onProgress,
+      );
+      // 2. 创建 entry
+      const created = await api.createEntry({
+        title: fileName,
+        tags: ["photo"],
+      });
+      // 3. 保存 photo block
+      const photoBlock: Block = {
+        type: "photo",
+        cos_key: uploaded.url,
+        thumbnail_url: uploaded.url,
+        file_name: fileName,
+        mime: uploaded.mime ?? mimeType,
+        size: uploaded.size,
+        order: 0,
+      };
+      try {
+        await api.updateBlocks(created.id, [photoBlock]);
+        // 4. 触发管线（非阻塞，失败忽略）
+        if (photoBlock.id) {
+          void api.processEntry(created.id, {
+            block_id: photoBlock.id,
+            cos_key: uploaded.url,
+            block_type: "photo",
+          });
+        }
+      } catch {
+        // block 保存/管线触发失败不阻塞 entry 展示
+      }
+      this.update({
+        entries: [created, ...this.state.entries],
+        loading: false,
+      });
+      return created;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "拍照创建失败";
+      this.update({ error: message, loading: false });
+      return null;
+    }
+  }
+
+  /**
+   * 文件创建 Entry：上传文件 → 创建 entry → 保存 file block。
+   */
+  async createFileEntry(
+    fileUri: string,
+    fileName: string,
+    mimeType: string,
+    onProgress?: (pct: number) => void,
+  ): Promise<ZentrimEntry | null> {
+    this.update({ loading: true, error: null });
+    try {
+      const uploaded = await api.uploadFile(
+        fileUri,
+        fileName,
+        mimeType,
+        onProgress,
+      );
+      const created = await api.createEntry({
+        title: fileName,
+        tags: ["file"],
+      });
+      const fileBlock: Block = {
+        type: "file",
+        cos_key: uploaded.url,
+        file_name: fileName,
+        mime: uploaded.mime ?? mimeType,
+        size: uploaded.size,
+        order: 0,
+      };
+      try {
+        await api.updateBlocks(created.id, [fileBlock]);
+        if (fileBlock.id) {
+          void api.processEntry(created.id, {
+            block_id: fileBlock.id,
+            cos_key: uploaded.url,
+            block_type: "file",
+          });
+        }
+      } catch {
+        // 同上，非阻塞
+      }
+      this.update({
+        entries: [created, ...this.state.entries],
+        loading: false,
+      });
+      return created;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "文件创建失败";
+      this.update({ error: message, loading: false });
+      return null;
     }
   }
 

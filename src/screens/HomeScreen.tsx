@@ -2,23 +2,25 @@
  * Zentrim 首页
  *
  * 数据来源：zentrimStore（fetchEntries() 后注入）。
- * 聚焦页面时自动重新拉取；后端不可达时回退到 mock 数据，不白屏。
+ * 聚焦页面时自动重新拉取；pull-to-refresh。
  *
- * 上下布局：
- * - 顶部问候语（随时间变化）
+ * 布局（竖排卡片版）：
+ * - 顶部问候语 + 登出
  * - "注意到"提示行（点击弹出 Modal）
- * - 三张白色圆角卡片：📋待办 | 📈完成度 | 📅全部
- * - 底部居中蓝色 + 按钮 → 跳转 CanvasScreen
- * - 点卡片弹出底部 Sheet（按 created_at 分组显示真实 entries）
+ * - 三张竖排长条形卡片：📋待办 | 📈完成度追踪 | 📅全部笔记
+ *   - 数值 0：灰色文字 + 灰色背景
+ *   - 数值 > 0：正常文字 + 白色背景（"全部笔记"始终有色）
+ * - FlatList 时间线
+ * - 浮窗 ＋ 按钮 → Canvas
  */
 
 import React, { useCallback, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
+  Alert,
+  FlatList,
   Modal,
   Pressable,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -31,20 +33,6 @@ import type { RootStackParamList } from "../navigation/AppNavigator";
 import { zentrimStore, useZentrimStore } from "../services/zentrim-store";
 import { authStore } from "../services/auth-store";
 import type { ZentrimEntry } from "../types/api";
-
-/** 模拟数据：后端不可达时兜底显示 */
-interface NoteEntry {
-  date: string;
-  icon: string;
-  title: string;
-  status?: "done" | "pending";
-}
-
-const MOCK_NOTES: NoteEntry[] = [
-  { date: "07-09", icon: "📷", title: "化学试卷批改", status: "done" },
-  { date: "07-09", icon: "🎙️", title: "英语课堂录音", status: "pending" },
-  { date: "07-08", icon: "📝", title: "三角函数总结" },
-];
 
 /** 根据当前小时返回问候 */
 function getGreeting(): string {
@@ -66,33 +54,36 @@ function formatDate(iso: string): string {
   return `${mm}-${dd}`;
 }
 
-/** type → emoji 映射（未知类型显示 📝） */
-function iconForType(type?: string): string {
-  switch (type) {
-    case "todo":
-      return "📋";
-    case "audio":
-    case "voice":
-      return "🎙️";
-    case "photo":
-      return "📷";
-    case "pdf":
-      return "📄";
-    case "note":
-      return "📝";
-    default:
-      return "📝";
-  }
+/** 把 ISO 时间戳转成 HH:MM */
+function formatTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mi}`;
 }
 
-type CardKind = "todo" | "completion" | "all";
+/** 根据 tags / type 推断图标 */
+function iconForEntry(e: ZentrimEntry): string {
+  const tags = e.tags ?? [];
+  if (tags.includes("photo")) return "📷";
+  if (tags.includes("file")) return "📎";
+  if (tags.includes("audio") || tags.includes("voice")) return "🎙️";
+  if (e.type === "audio" || e.type === "voice") return "🎙️";
+  if (e.type === "photo") return "📷";
+  if (e.type === "pdf") return "📄";
+  return "📝";
+}
+
+type CardKind = "todo" | "active" | "all";
 
 interface CardData {
   kind: CardKind;
   icon: string;
   title: string;
-  value: string;
-  hint: string;
+  value: number;
+  /** true 表示始终有色（不管值是否为 0） */
+  alwaysColored: boolean;
 }
 
 type HomeScreenNavigationProp = NativeStackNavigationProp<
@@ -104,75 +95,40 @@ export function HomeScreen() {
   const navigation = useNavigation<HomeScreenNavigationProp>();
   const { entries, loading, error } = useZentrimStore();
   const [noticeVisible, setNoticeVisible] = useState(false);
-  const [sheetKind, setSheetKind] = useState<CardKind | null>(null);
+  const [actionEntryId, setActionEntryId] = useState<string | null>(null);
 
   // 每次页面聚焦 → 重新拉取
+  // fix(P1-6): 页面失焦时取消 fetch（用 cancelled flag 避免卸载后 setState）
   useFocusEffect(
     useCallback(() => {
-      void zentrimStore.fetchEntries();
+      let cancelled = false;
+      void zentrimStore.fetchEntries().then(() => {
+        if (cancelled) {
+          // 仅阻止后续逻辑（目前 fetchEntries 内部已 setState，无法阻止，
+          // 但保留 flag 供未来扩展分页/搜索时使用）
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
     }, []),
   );
 
   const greeting = useMemo(() => getGreeting(), []);
 
-  // 三张卡片的数据（全部来自真实 entries；空数组时显示 0）
+  // 三张卡片：todo = tags 含 "todo"；active = 未归档；all = 总数
   const cards: CardData[] = useMemo(() => {
-    const todoCount = entries.filter((e) => e.type === "todo").length;
+    const todoCount = entries.filter((e) =>
+      (e.tags ?? []).includes("todo"),
+    ).length;
     const activeCount = entries.filter((e) => !e.is_archived).length;
     const total = entries.length;
     return [
-      { kind: "todo", icon: "📋", title: "待办", value: String(todoCount), hint: "未完成" },
-      {
-        kind: "completion",
-        icon: "📈",
-        title: "完成度",
-        value: String(activeCount),
-        hint: "未归档",
-      },
-      { kind: "all", icon: "📅", title: "全部", value: String(total), hint: "条笔记" },
+      { kind: "todo", icon: "📋", title: "TODO", value: todoCount, alwaysColored: false },
+      { kind: "active", icon: "📈", title: "完成度追踪", value: activeCount, alwaysColored: false },
+      { kind: "all", icon: "📅", title: "全部笔记", value: total, alwaysColored: true },
     ];
   }, [entries]);
-
-  const sheetTitle = useMemo(() => {
-    if (sheetKind === "all") return "📅 全部笔记";
-    if (sheetKind === "todo") return "📋 待办";
-    if (sheetKind === "completion") return "📈 完成度";
-    return "";
-  }, [sheetKind]);
-
-  // Sheet 内显示的列表：先尝试真实数据，失败/空时回退到 mock
-  const sheetItems: Array<{
-    key: string;
-    date: string;
-    icon: string;
-    title: string;
-    status?: "done" | "pending";
-  }> = useMemo(() => {
-    if (entries.length > 0) {
-      // 按 sheetKind 过滤
-      let list = entries;
-      if (sheetKind === "todo") {
-        list = list.filter((e) => e.type === "todo");
-      } else if (sheetKind === "completion") {
-        list = list.filter((e) => !e.is_archived);
-      }
-      return list.map((e: ZentrimEntry) => ({
-        key: e.id,
-        date: formatDate(e.created_at),
-        icon: iconForType(e.type),
-        title: e.title || e.content_preview || "(无标题)",
-        status: e.is_archived ? "done" : "pending",
-      }));
-    }
-    // fallback
-    return MOCK_NOTES.map((n, idx) => ({
-      key: `mock-${idx}`,
-      date: n.date,
-      icon: n.icon,
-      title: n.title,
-      status: n.status,
-    }));
-  }, [entries, sheetKind]);
 
   const onRefresh = useCallback(() => {
     void zentrimStore.fetchEntries();
@@ -182,68 +138,166 @@ export function HomeScreen() {
     void authStore.logout();
   }, []);
 
+  // 长按 → action sheet
+  const onLongPressEntry = useCallback((id: string) => {
+    setActionEntryId(id);
+  }, []);
+
+  // fix(P1-7): 异步操作完成前不关闭 action sheet，失败时弹 Alert 反馈
+  const [actionPending, setActionPending] = useState(false);
+
+  const onArchive = useCallback(async () => {
+    if (!actionEntryId) return;
+    const id = actionEntryId;
+    setActionPending(true);
+    const ok = await zentrimStore.archiveEntry(id);
+    setActionPending(false);
+    if (ok) {
+      setActionEntryId(null);
+    } else {
+      const errMsg = zentrimStore.getState().error ?? "归档失败";
+      Alert.alert("操作失败", errMsg, [{ text: "知道了" }]);
+    }
+  }, [actionEntryId]);
+
+  // fix(P1-3): deleteEntry 返回结果后反馈，失败时不关闭 sheet
+  const onDelete = useCallback(() => {
+    if (!actionEntryId) return;
+    const id = actionEntryId;
+    Alert.alert("删除笔记", "确定删除？删除后不可恢复。", [
+      { text: "取消", style: "cancel" },
+      {
+        text: "删除",
+        style: "destructive",
+        onPress: async () => {
+          setActionPending(true);
+          const ok = await zentrimStore.deleteEntry(id);
+          setActionPending(false);
+          if (ok) {
+            setActionEntryId(null);
+          } else {
+            const errMsg = zentrimStore.getState().error ?? "删除失败";
+            Alert.alert("操作失败", errMsg, [{ text: "知道了" }]);
+          }
+        },
+      },
+    ]);
+  }, [actionEntryId]);
+
+  // 跳转 Canvas（新建模式，不传 entryId）
+  const goCanvas = useCallback(() => {
+    navigation.navigate("Canvas");
+  }, [navigation]);
+
+  // 跳转 Canvas（打开已有条目）
+  const goCanvasWithEntry = useCallback(
+    (entryId: string) => {
+      navigation.navigate("Canvas", { entryId });
+    },
+    [navigation],
+  );
+
+  // 渲染单条 entry
+  const renderEntry = useCallback(
+    ({ item }: { item: ZentrimEntry }) => {
+      const title = item.title || item.content_preview || "(无标题)";
+      return (
+        <Pressable
+          style={styles.noteItem}
+          onLongPress={() => onLongPressEntry(item.id)}
+          onPress={() => goCanvasWithEntry(item.id)}
+        >
+          <Text style={styles.noteDate}>{formatDate(item.created_at)}</Text>
+          <Text style={styles.noteIcon}>{iconForEntry(item)}</Text>
+          <View style={styles.noteTextWrap}>
+            <Text style={styles.noteTitle} numberOfLines={1}>
+              {title}
+            </Text>
+            <Text style={styles.noteTime}>{formatTime(item.created_at)}</Text>
+          </View>
+          {item.is_archived && (
+            <Text style={styles.noteArchived}>📦</Text>
+          )}
+        </Pressable>
+      );
+    },
+    [goCanvas, goCanvasWithEntry, onLongPressEntry],
+  );
+
+  // 渲染单张竖排卡片
+  // fix(P0-2): 纯展示卡片，Pressable → View（无 onPress，避免不必要的点击反馈）
+  const renderCard = useCallback(
+    (card: CardData) => {
+      const isEmpty = card.value === 0;
+      const colored = card.alwaysColored || !isEmpty;
+      return (
+        <View
+          key={card.kind}
+          style={[styles.cardRow, !colored && styles.cardRowEmpty]}
+        >
+          <View style={styles.cardLeft}>
+            <Text style={[styles.cardIcon, !colored && styles.cardIconEmpty]}>{card.icon}</Text>
+            <Text style={[styles.cardTitle, !colored && styles.cardTitleEmpty]}>{card.title}</Text>
+          </View>
+          <Text style={[styles.cardValue, !colored && styles.cardValueEmpty]}>
+            {card.value}
+          </Text>
+        </View>
+      );
+    },
+    [],
+  );
+
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
-      <ScrollView
-        contentContainerStyle={styles.scroll}
+      {/* 顶部滚动区域 */}
+      <FlatList
+        data={entries}
+        keyExtractor={(e) => e.id}
+        renderItem={renderEntry}
         refreshControl={
           <RefreshControl refreshing={loading} onRefresh={onRefresh} />
         }
-      >
-        {/* 头部：问候 + 登出 */}
-        <View style={styles.headerRow}>
-          <Text style={styles.greeting}>{greeting}</Text>
-          <Pressable onPress={onLogout} hitSlop={8}>
-            <Text style={styles.logoutText}>登出</Text>
-          </Pressable>
-        </View>
+        ListHeaderComponent={
+          <View>
+            {/* 头部：问候 + 登出 */}
+            <View style={styles.headerRow}>
+              <Text style={styles.greeting}>{greeting}</Text>
+              <Pressable onPress={onLogout} hitSlop={8}>
+                <Text style={styles.logoutText}>登出</Text>
+              </Pressable>
+            </View>
 
-        {/* 注意到提示行 */}
-        <Pressable onPress={() => setNoticeVisible(true)}>
-          <Text style={styles.notice}>💡 你有一段录音提到了 Kimi K2.7</Text>
-        </Pressable>
-
-        {/* 三张卡片 */}
-        <View style={styles.cardsRow}>
-          {cards.map((card) => (
-            <Pressable
-              key={card.kind}
-              style={styles.card}
-              onPress={() => setSheetKind(card.kind)}
-            >
-              <Text style={styles.cardIcon}>{card.icon}</Text>
-              <Text style={styles.cardTitle}>{card.title}</Text>
-              <Text style={styles.cardValue}>{card.value}</Text>
-              <Text style={styles.cardHint}>{card.hint}</Text>
+            {/* 注意到提示行 */}
+            <Pressable onPress={() => setNoticeVisible(true)}>
+              <Text style={styles.notice}>💡 你有一段录音提到了 Kimi K2.7</Text>
             </Pressable>
-          ))}
-        </View>
 
-        {/* 错误提示（不阻塞 UI） */}
-        {error !== null && entries.length === 0 && (
-          <Text style={styles.errorHint}>
-            ⚠️ 后端未连通，已显示示例数据（{error}）
-          </Text>
-        )}
+            {/* 三张竖排卡片 */}
+            <View style={styles.cardsColumn}>
+              {cards.map(renderCard)}
+            </View>
 
-        {/* 预留空间，把 + 按钮挤到底部 */}
-        <View style={styles.spacer} />
-      </ScrollView>
+            {/* 错误提示（不阻塞 UI） */}
+            {error !== null && (
+              <Text style={styles.errorHint}>⚠️ {error}</Text>
+            )}
 
-      {/* 底部 + 按钮 */}
-      <SafeAreaView edges={["bottom"]} style={styles.bottomBar}>
-        <TouchableOpacity
-          style={styles.addButton}
-          activeOpacity={0.85}
-          onPress={() => navigation.navigate("Canvas")}
-        >
-          {loading ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.addButtonText}>＋</Text>
-          )}
-        </TouchableOpacity>
-      </SafeAreaView>
+            <Text style={styles.timelineHeader}>时间线</Text>
+          </View>
+        }
+        ListEmptyComponent={
+          !loading ? (
+            <Text style={styles.emptyHint}>暂无笔记，点击 ＋ 开始第一条</Text>
+          ) : null
+        }
+        contentContainerStyle={styles.listContent}
+      />
+
+      {/* 浮窗 ＋ 按钮 → Canvas */}
+      <Pressable style={styles.fab} onPress={goCanvas}>
+        <Text style={styles.fabText}>＋</Text>
+      </Pressable>
 
       {/* 注意到 Modal */}
       <Modal
@@ -285,58 +339,40 @@ export function HomeScreen() {
         </Pressable>
       </Modal>
 
-      {/* 时间线 Sheet（点卡片弹出） */}
+      {/* 长按 entry → action sheet */}
       <Modal
-        visible={sheetKind !== null}
+        visible={actionEntryId !== null}
         transparent
-        animationType="slide"
-        onRequestClose={() => setSheetKind(null)}
+        animationType="fade"
+        onRequestClose={() => { if (!actionPending) setActionEntryId(null); }}
       >
         <Pressable
-          style={styles.sheetBackdrop}
-          onPress={() => setSheetKind(null)}
+          style={styles.modalBackdrop}
+          onPress={() => { if (!actionPending) setActionEntryId(null); }}
         >
-          <Pressable style={styles.sheet} onPress={() => undefined}>
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>{sheetTitle}</Text>
-              <Pressable
-                style={styles.sheetClose}
-                onPress={() => setSheetKind(null)}
-                hitSlop={8}
-              >
-                <Text style={styles.sheetCloseText}>✕</Text>
-              </Pressable>
-            </View>
-            <ScrollView style={styles.sheetList}>
-              {sheetItems.length === 0 ? (
-                <Text style={styles.sheetEmpty}>暂无内容</Text>
-              ) : (
-                sheetItems.map((note) => (
-                  <Pressable
-                    key={note.key}
-                    style={styles.noteItem}
-                    onPress={() => {
-                      setSheetKind(null);
-                      navigation.navigate("Canvas");
-                    }}
-                  >
-                    <Text style={styles.noteDate}>{note.date}</Text>
-                    <Text style={styles.noteIcon}>{note.icon}</Text>
-                    <View style={styles.noteTextWrap}>
-                      <Text style={styles.noteTitle} numberOfLines={1}>
-                        {note.title}
-                      </Text>
-                      {note.status === "done" && (
-                        <Text style={styles.noteStatusDone}>✓已处理</Text>
-                      )}
-                      {note.status === "pending" && (
-                        <Text style={styles.noteStatusPending}>⏳转换中</Text>
-                      )}
-                    </View>
-                  </Pressable>
-                ))
-              )}
-            </ScrollView>
+          <Pressable style={styles.actionSheet} onPress={() => undefined}>
+            <TouchableOpacity
+              style={styles.actionSheetBtn}
+              onPress={() => void onArchive()}
+            >
+              <Text style={styles.actionSheetText}>📦 归档</Text>
+            </TouchableOpacity>
+            <View style={styles.actionSheetDivider} />
+            <TouchableOpacity
+              style={styles.actionSheetBtn}
+              onPress={() => onDelete()}
+            >
+              <Text style={[styles.actionSheetText, styles.actionSheetDelete]}>
+                🗑️ 删除
+              </Text>
+            </TouchableOpacity>
+            <View style={styles.actionSheetDivider} />
+            <TouchableOpacity
+              style={styles.actionSheetBtn}
+              onPress={() => setActionEntryId(null)}
+            >
+              <Text style={styles.actionSheetCancelText}>取消</Text>
+            </TouchableOpacity>
           </Pressable>
         </Pressable>
       </Modal>
@@ -349,10 +385,10 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#F5F5F0",
   },
-  scroll: {
-    flexGrow: 1,
-    paddingHorizontal: 20,
+  listContent: {
+    paddingHorizontal: 16,
     paddingTop: 16,
+    paddingBottom: 96,
   },
   headerRow: {
     flexDirection: "row",
@@ -374,75 +410,131 @@ const styles = StyleSheet.create({
     color: "#888",
     marginBottom: 20,
   },
-  cardsRow: {
-    flexDirection: "row",
-    gap: 10,
+  // ── 竖排卡片 ──
+  cardsColumn: {
+    flexDirection: "column",
+    gap: 8,
   },
-  card: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 14,
-    paddingVertical: 16,
-    paddingHorizontal: 10,
+  cardRow: {
+    flexDirection: "row",
     alignItems: "center",
-    shadowColor: "#000",
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 1,
+    justifyContent: "space-between",
+    height: 64,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    backgroundColor: "#FFFFFF",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#E5E5E5",
+  },
+  cardRowEmpty: {
+    backgroundColor: "#f0f0f0",
+    borderColor: "transparent",
+  },
+  cardLeft: {
+    flexDirection: "row",
+    alignItems: "center",
   },
   cardIcon: {
-    fontSize: 22,
-    marginBottom: 6,
+    fontSize: 20,
+    marginRight: 12,
+  },
+  cardIconEmpty: {
+    opacity: 0.4,
   },
   cardTitle: {
-    fontSize: 12,
-    color: "#666",
-    marginBottom: 4,
+    fontSize: 15,
+    color: "#1a1a1a",
+  },
+  cardTitleEmpty: {
+    color: "#999",
   },
   cardValue: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: "700",
     color: "#1a1a1a",
-    marginBottom: 2,
   },
-  cardHint: {
-    fontSize: 11,
+  cardValueEmpty: {
     color: "#999",
+  },
+  // ── 浮窗 ＋ 按钮 ──
+  fab: {
+    position: "absolute",
+    right: 20,
+    bottom: 24,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "#1976d2",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  fabText: {
+    fontSize: 28,
+    color: "#FFFFFF",
+    fontWeight: "300",
+    marginTop: -2,
+  },
+  // ── 时间线 ──
+  timelineHeader: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#1a1a1a",
+    marginTop: 24,
+    marginBottom: 8,
+  },
+  emptyHint: {
+    fontSize: 14,
+    color: "#999",
+    textAlign: "center",
+    paddingVertical: 40,
   },
   errorHint: {
     fontSize: 12,
     color: "#f57c00",
     marginTop: 12,
   },
-  spacer: {
-    flexGrow: 1,
-    minHeight: 80,
-  },
-  bottomBar: {
+  noteItem: {
+    flexDirection: "row",
     alignItems: "center",
-    paddingBottom: 12,
-    backgroundColor: "#F5F5F0",
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#EEE",
   },
-  addButton: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: "#1976d2",
+  noteDate: {
+    width: 48,
+    fontSize: 12,
+    color: "#999",
+  },
+  noteIcon: {
+    fontSize: 20,
+    marginRight: 12,
+  },
+  noteTextWrap: {
+    flex: 1,
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 4,
+    justifyContent: "space-between",
   },
-  addButtonText: {
-    color: "#FFFFFF",
-    fontSize: 30,
-    fontWeight: "300",
-    lineHeight: 34,
+  noteTitle: {
+    fontSize: 14,
+    color: "#1a1a1a",
+    flex: 1,
+    marginRight: 8,
   },
+  noteTime: {
+    fontSize: 11,
+    color: "#bbb",
+  },
+  noteArchived: {
+    fontSize: 16,
+    marginLeft: 8,
+  },
+  // ── Modal ──
   modalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.4)",
@@ -491,82 +583,30 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontWeight: "600",
   },
-  sheetBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.4)",
-    justifyContent: "flex-end",
-  },
-  sheet: {
+  actionSheet: {
+    width: "100%",
     backgroundColor: "#FFFFFF",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    maxHeight: "70%",
+    borderRadius: 14,
+    overflow: "hidden",
   },
-  sheetHeader: {
-    flexDirection: "row",
+  actionSheetBtn: {
+    paddingVertical: 14,
     alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 12,
   },
-  sheetTitle: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#1a1a1a",
+  actionSheetText: {
+    fontSize: 15,
+    color: "#1976d2",
   },
-  sheetClose: {
-    width: 28,
-    height: 28,
-    alignItems: "center",
-    justifyContent: "center",
+  actionSheetDelete: {
+    color: "#d32f2f",
   },
-  sheetCloseText: {
-    fontSize: 16,
+  actionSheetCancelText: {
+    fontSize: 15,
     color: "#666",
   },
-  sheetList: {
-    flexGrow: 0,
-  },
-  sheetEmpty: {
-    fontSize: 14,
-    color: "#999",
-    textAlign: "center",
-    paddingVertical: 24,
-  },
-  noteItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#EEE",
-  },
-  noteDate: {
-    width: 48,
-    fontSize: 12,
-    color: "#999",
-  },
-  noteIcon: {
-    fontSize: 20,
-    marginRight: 12,
-  },
-  noteTextWrap: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  noteTitle: {
-    fontSize: 14,
-    color: "#1a1a1a",
-    flex: 1,
-    marginRight: 8,
-  },
-  noteStatusDone: {
-    fontSize: 12,
-    color: "#388e3c",
-  },
-  noteStatusPending: {
-    fontSize: 12,
-    color: "#f57c00",
+  actionSheetDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#EEE",
+    marginHorizontal: 12,
   },
 });

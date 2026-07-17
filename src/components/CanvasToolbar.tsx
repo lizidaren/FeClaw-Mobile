@@ -22,8 +22,8 @@ import {
 export type ToolMode = "ink" | "eraser";
 
 export interface CanvasToolbarProps {
-  /** 当前激活的工具 */
-  activeTool: ToolMode;
+  /** 当前激活的工具；null 表示未选中（键盘模式，工具栏按钮全部灰色未选中态） */
+  activeTool: ToolMode | null;
   /** 是否有可撤销的笔划 */
   canUndo: boolean;
   onSelectTool: (tool: ToolMode) => void;
@@ -43,8 +43,8 @@ export const CanvasToolbar = React.memo(function CanvasToolbar({
   onUndo,
 }: CanvasToolbarProps) {
   const isInk = activeTool === "ink";
-
   // 笔按钮手势：单击选中笔 / 双击（已在笔模式时）打开颜色面板
+  // 当 activeTool === null（键盘模式）时，单击也能切到笔模式（隐藏键盘由父组件处理）
   const penGesture = useMemo(() => {
     const doubleTap = Gesture.Tap()
       .numberOfTaps(2)
@@ -61,29 +61,30 @@ export const CanvasToolbar = React.memo(function CanvasToolbar({
       .numberOfTaps(1)
       .onEnd((_e, success) => {
         if (!success) return;
+        // fix(P1-8): 已在 ink 模式时单击无操作，避免重复调用 onSelectTool 产生副作用
+        if (isInk) return;
         onSelectTool("ink");
       });
     // 优先识别双击；双击失败才回退到单击
     return Gesture.Exclusive(doubleTap, singleTap);
   }, [isInk, onPenDoubleTap, onSelectTool]);
-
   return (
     <View style={styles.container}>
       <GestureDetector gesture={penGesture}>
         <View
-          style={[styles.button, isInk && styles.buttonActive]}
+          style={[styles.button, isInk && styles.buttonActive, activeTool === null && styles.buttonInactive]}
           accessibilityRole="button"
-          // fix(P1-2): 使用常量替代硬编码字符串
           accessibilityLabel={isInk ? TOOLBAR_PEN_A11Y : TOOLBAR_PEN}
         >
-          <Text style={styles.icon}>✏️</Text>
-          <Text style={styles.label}>{TOOLBAR_PEN}</Text>
+          <Text style={[styles.icon, activeTool === null && styles.iconInactive]}>✏️</Text>
+          <Text style={[styles.label, activeTool === null && styles.labelInactive]}>{TOOLBAR_PEN}</Text>
         </View>
       </GestureDetector>
       <ToolbarButton
         label={TOOLBAR_ERASER}
         icon="🧹"
         active={activeTool === "eraser"}
+        inactive={activeTool === null}
         onPress={() => onSelectTool("eraser")}
       />
       <ToolbarButton
@@ -108,11 +109,20 @@ interface ToolbarButtonProps {
   icon: string;
   active: boolean;
   disabled?: boolean;
+  /** 未选中态（键盘模式）：灰色半透明图标，无高亮背景 */
+  inactive?: boolean;
   onPress: () => void;
 }
 
 // fix(P1-4): React.memo 避免每次父组件渲染都重建按钮
-const ToolbarButton = React.memo(function ToolbarButton({ label, icon, active, disabled, onPress }: ToolbarButtonProps) {
+const ToolbarButton = React.memo(function ToolbarButton({
+  label,
+  icon,
+  active,
+  disabled,
+  inactive,
+  onPress,
+}: ToolbarButtonProps) {
   return (
     <TouchableOpacity
       activeOpacity={0.6}
@@ -121,11 +131,16 @@ const ToolbarButton = React.memo(function ToolbarButton({ label, icon, active, d
       style={[
         styles.button,
         active && styles.buttonActive,
+        inactive && styles.buttonInactive,
         disabled && styles.buttonDisabled,
       ]}
     >
-      <Text style={[styles.icon, disabled && styles.iconDisabled]}>{icon}</Text>
-      <Text style={[styles.label, disabled && styles.labelDisabled]}>{label}</Text>
+      <Text style={[styles.icon, inactive && styles.iconInactive, disabled && styles.iconDisabled]}>
+        {icon}
+      </Text>
+      <Text style={[styles.label, inactive && styles.labelInactive, disabled && styles.labelDisabled]}>
+        {label}
+      </Text>
     </TouchableOpacity>
   );
 });
@@ -158,11 +173,19 @@ const styles = StyleSheet.create({
   buttonActive: {
     backgroundColor: "#E8F0FE",
   },
+  buttonInactive: {
+    backgroundColor: "transparent",
+    borderWidth: 1,
+    borderColor: "#DDD",
+  },
   buttonDisabled: {
     opacity: 0.4,
   },
   icon: {
     fontSize: 22,
+  },
+  iconInactive: {
+    opacity: 0.45,
   },
   iconDisabled: {
     opacity: 0.4,
@@ -171,6 +194,9 @@ const styles = StyleSheet.create({
     fontSize: 10,
     marginTop: 2,
     color: "#333",
+  },
+  labelInactive: {
+    color: "#999",
   },
   labelDisabled: {
     color: "#999",

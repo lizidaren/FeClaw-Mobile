@@ -62,10 +62,227 @@ export interface UpdateEntryRequest {
   is_archived?: boolean;
 }
 
+/** ── Canvas 聚合数据 ─────────────────────────────────── */
+
+/** Canvas 聚合端点返回的 block 项（比 Block 类型更贴近后端实际字段） */
+export interface CanvasBlock {
+  id: string;
+  entry_id?: string;
+  sort_order?: number;
+  type: string; // "text" | "ink" | "audio" | "photo" | "image" | "file"
+  /** JSON 数据（ink block 存 strokes/images/metadata；photo 存 cos_key 等） */
+  data?: Record<string, unknown> | null;
+  /** text block 的纯文本内容 */
+  text?: string;
+  model_name?: string;
+  vector_id?: string;
+  created_at?: string;
+}
+
+/** GET /api/zentrim/entries/{entry_id}/canvas 返回结构 */
+export interface CanvasData {
+  entry: {
+    id: string;
+    title?: string;
+    tags?: string[];
+    metadata?: Record<string, unknown> | null;
+    [key: string]: unknown;
+  };
+  blocks: CanvasBlock[];
+}
+
 /** Block（条目内嵌的笔记块） */
 export interface Block {
   id?: string;
   type?: string;
   content?: string;
   order?: number;
+  /** COS 远端路径（photo/file block 用） */
+  cos_key?: string;
+  /** 缩略图 URL（photo block 用） */
+  thumbnail_url?: string;
+  /** 原始文件名 */
+  file_name?: string;
+  /** MIME 类型 */
+  mime?: string;
+  /** 文件大小（字节） */
+  size?: number;
+}
+
+/** 触发 AI 管线请求 */
+export interface ProcessEntryRequest {
+  block_id: string;
+  cos_key: string;
+  block_type: string;
+}
+
+/** 管线处理状态 */
+export interface EntryProcessStatus {
+  status: "pending" | "processing" | "done" | "error";
+  message?: string;
+  progress?: number;
+}
+
+/** ── Chat ───────────────────────────────────────────── */
+
+/** 会话类型：私聊 / 群聊 */
+export type ChatSessionType = "private" | "group";
+
+/** 会话列表中的简要信息 */
+export interface ChatSessionInfo {
+  session_id: string;
+  /** 私聊/群聊（默认 private，向后兼容老后端） */
+  type?: ChatSessionType;
+  /** 群聊名称（仅 type === "group"） */
+  group_name?: string;
+  /** Agent hash / id（私聊和多 Agent 切换场景） */
+  agent_id?: string;
+  /** Agent 显示名 */
+  agent_name?: string;
+  message_count?: number;
+  topic?: string;
+  last_message?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** 图片附件（user / assistant 通用） */
+export interface ChatImageAttachment {
+  /** 远端 URL 或 base64 data URL */
+  url: string;
+  /** 可选：宽高（用于占位） */
+  width?: number;
+  height?: number;
+  /** 可选：MIME */
+  mime?: string;
+}
+
+/** 文件附件 */
+export interface ChatFileAttachment {
+  /** 远端 URL 或本地路径 */
+  path: string;
+  /** 文件名 */
+  name: string;
+  /** 字节数 */
+  size?: number;
+  /** MIME */
+  mime?: string;
+}
+
+/** 会话内的一条消息 */
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  timestamp?: string;
+  /** 发送者名称（群聊场景） */
+  sender_name?: string;
+  /** 发送者 id（群聊场景） */
+  sender_id?: string;
+  /** 附带图片 */
+  images?: ChatImageAttachment[];
+  /** 附带文件 */
+  files?: ChatFileAttachment[];
+}
+
+/** 会话详情（列表 + 消息） */
+export interface ChatSessionDetail {
+  session_id: string;
+  type?: ChatSessionType;
+  group_name?: string;
+  agent_id?: string;
+  agent_name?: string;
+  message_count?: number;
+  topic?: string;
+  created_at?: string;
+  updated_at?: string;
+  messages?: ChatMessage[];
+}
+
+/** 发送消息请求体 */
+export interface ChatStreamRequest {
+  content: string;
+  session_id?: string | null;
+  /** 图片 URL（base64 data URL 或已上传 URL），与后端约定 */
+  image_url?: string;
+  /** 文件路径 */
+  file_path?: string;
+  /** 文件名 */
+  file_name?: string;
+  /** 群聊 id（type === "group" 时必填） */
+  group_id?: string;
+  /** Agent id（多 Agent 场景） */
+  agent_id?: string;
+}
+
+/** SSE 流式事件（兼容多种后端实现） */
+export interface ChatStreamEvent {
+  /** 事件类型，如 "message" / "delta" / "done" / "error" */
+  type?: string;
+  /** 文本增量（流式 chunk） */
+  content?: string;
+  /** 完整消息（done 事件） */
+  message?: string;
+  /** 会话 id（首条响应里返回） */
+  session_id?: string;
+  /** 群聊 id（群聊响应里返回） */
+  group_id?: string;
+  /** 错误信息 */
+  error?: string;
+  /** 允许后端把整段 JSON 直接放在 data 字段 */
+  data?: string;
+  /** 兼容字段：会话主题 */
+  topic?: string;
+}
+
+/** ── Group ──────────────────────────────────────────── */
+
+/** 群基本信息 */
+export interface GroupInfo {
+  group_id: string;
+  name: string;
+  description?: string;
+  member_count?: number;
+  created_at?: string;
+  updated_at?: string;
+  /** 群成员列表（如果后端在 list 时一并返回） */
+  members?: GroupMember[];
+}
+
+/** 群成员 */
+export interface GroupMember {
+  member_id: string;
+  name: string;
+  /** Agent / Human */
+  kind?: "agent" | "human";
+  avatar_url?: string;
+}
+
+/** 群消息 */
+export interface GroupMessage {
+  message_id?: string;
+  group_id: string;
+  sender_id: string;
+  sender_name?: string;
+  content: string;
+  timestamp?: string;
+  images?: ChatImageAttachment[];
+  files?: ChatFileAttachment[];
+}
+
+/** 发送群消息请求 */
+export interface SendGroupMessageRequest {
+  content: string;
+  image_url?: string;
+  file_path?: string;
+  file_name?: string;
+}
+
+/** ── Agent ──────────────────────────────────────────── */
+
+/** Agent 摘要 */
+export interface AgentInfo {
+  agent_id: string;
+  name: string;
+  description?: string;
+  avatar_url?: string;
 }

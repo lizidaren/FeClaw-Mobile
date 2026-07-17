@@ -55,6 +55,8 @@ export interface ThreeDotMenuProps {
   onExportSvg: () => void;
   onExportPng: () => void;
   onInsertFile: () => void;
+  /** 未实现的功能按钮设为 disabled（灰色不可点） */
+  disabledItems?: string[];
 }
 
 export function ThreeDotMenu({
@@ -63,6 +65,7 @@ export function ThreeDotMenu({
   onExportSvg,
   onExportPng,
   onInsertFile,
+  disabledItems = [],
 }: ThreeDotMenuProps) {
   const [open, setOpen] = useState(false);
 
@@ -124,9 +127,10 @@ export function ThreeDotMenu({
           <View style={styles.divider} />
 
           {/* 操作项 */}
-          <MenuItem icon="🗂" label={MENU_CHANGE_TIMELINE} onPress={run(onChangeTimeline)} />
+          {/* fix(P2-2): 未实现的操作以 disabled 灰色显示，不再 console.warn */}
+          <MenuItem icon="🗂" label={MENU_CHANGE_TIMELINE} onPress={run(onChangeTimeline)} disabled={disabledItems.includes("timeline")} />
           <MenuItem icon="🖼️" label={MENU_EXPORT_SVG} onPress={run(onExportSvg)} />
-          <MenuItem icon="🏞️" label={MENU_EXPORT_PNG} onPress={run(onExportPng)} />
+          <MenuItem icon="🏞️" label={MENU_EXPORT_PNG} onPress={run(onExportPng)} disabled={disabledItems.includes("png")} />
           <MenuItem icon="📎" label={MENU_INSERT_FILE} onPress={run(onInsertFile)} />
 
           <TouchableOpacity style={styles.cancel} onPress={close}>
@@ -153,15 +157,22 @@ const MenuItem = React.memo(function MenuItem({
   icon,
   label,
   onPress,
+  disabled,
 }: {
   icon: string;
   label: string;
   onPress: () => void;
+  disabled?: boolean;
 }) {
   return (
-    <TouchableOpacity style={styles.item} activeOpacity={0.6} onPress={onPress}>
-      <Text style={styles.itemIcon}>{icon}</Text>
-      <Text style={styles.itemLabel}>{label}</Text>
+    <TouchableOpacity
+      style={[styles.item, disabled && styles.itemDisabled]}
+      activeOpacity={0.6}
+      disabled={disabled}
+      onPress={onPress}
+    >
+      <Text style={[styles.itemIcon, disabled && styles.itemLabelDisabled]}>{icon}</Text>
+      <Text style={[styles.itemLabel, disabled && styles.itemLabelDisabled]}>{label}</Text>
     </TouchableOpacity>
   );
 });
@@ -252,6 +263,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 14,
   },
+  itemDisabled: {
+    opacity: 0.4,
+  },
   itemIcon: {
     fontSize: 20,
     width: 32,
@@ -259,6 +273,9 @@ const styles = StyleSheet.create({
   itemLabel: {
     fontSize: 16,
     color: "#333",
+  },
+  itemLabelDisabled: {
+    color: "#999",
   },
   cancel: {
     marginTop: 12,

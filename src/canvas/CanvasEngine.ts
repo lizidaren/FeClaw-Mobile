@@ -67,6 +67,9 @@ export interface EngineConfig {
   defaultEraserWidth?: number;
 }
 
+/** fix(P2-1): 导出默认 ink 颜色常量，供外部组件引用（避免硬编码） */
+export const DEFAULT_INK_COLOR = "#1a1a1a";
+
 /**
  * 画布渲染引擎
  */
@@ -78,7 +81,7 @@ export class CanvasEngine {
   private viewport: Viewport = makeViewport();
   private tool: ToolMode = "ink";
   private isDraftMode = false;
-  private inkColor = "#1a1a1a";
+  private inkColor = DEFAULT_INK_COLOR;
   private inkWidth = 4.0;
   private eraserWidth = 40;
 
@@ -106,7 +109,7 @@ export class CanvasEngine {
   constructor(config: EngineConfig = {}) {
     this.config = {
       draftOpacity: config.draftOpacity ?? 0.5,
-      defaultInkColor: config.defaultInkColor ?? "#1a1a1a",
+      defaultInkColor: config.defaultInkColor ?? DEFAULT_INK_COLOR,
       defaultInkWidth: config.defaultInkWidth ?? 4.0,
       defaultEraserWidth: config.defaultEraserWidth ?? 40,
     };
