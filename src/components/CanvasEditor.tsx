@@ -25,7 +25,7 @@ import React, {
 } from "react";
 import { Platform, View, type StyleProp, type ViewStyle } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
-import { CANVAS_EDITOR_HTML } from "../webview-editor/index.html";
+import { CANVAS_EDITOR_HTML } from "../webview-editor/index";
 import type {
   EditorOutboundMessage,
   IElement,
