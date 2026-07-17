@@ -279,7 +279,10 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
         <WebView
           ref={webViewRef}
           style={styles.webview}
-          originWhitelist={["*"]}
+          // fix(Bug-6): 不再使用 ["*"] 这种过度宽松的白名单。
+          // source={{html: ...}} 走的是 about:blank / inline HTML，
+          // 默认 originWhitelist=["https://*"] 已能覆盖内联内容的导航。
+          originWhitelist={["https://*", "about:blank"]}
           source={{ html: CANVAS_EDITOR_HTML, baseUrl: "" }}
           onMessage={handleMessage}
           // Android 软渲染避免硬件层在透明背景上显示黑色
@@ -296,6 +299,8 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
           cacheEnabled={false}
           // 防止 keyboard accessory 工具条遮挡
           hideKeyboardAccessoryView
+          // 避免键盘需要用户手动点击才聚焦
+          keyboardDisplayRequiresUserAction={false}
         />
       </View>
     );

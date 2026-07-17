@@ -24,6 +24,23 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { chatStore, useChatStore } from "../services/chat-store";
 import type { ChatSessionInfo, GroupInfo } from "../types/api";
 import type { RootStackParamList } from "../navigation/AppNavigator";
+import {
+  CHAT_TITLE,
+  CHAT_NEW_BTN,
+  CHAT_NEW_A11Y,
+  CHAT_TAB_PRIVATE,
+  CHAT_TAB_GROUP,
+  CHAT_DEFAULT_TOPIC,
+  CHAT_MESSAGE_COUNT_SUFFIX,
+  CHAT_REFRESH_HINT,
+  CHAT_REFRESHING,
+  CHAT_EMPTY_PRIVATE,
+  CHAT_EMPTY_PRIVATE_HINT,
+  CHAT_EMPTY_GROUP,
+  CHAT_EMPTY_GROUP_HINT,
+  CHAT_REFRESH_BTN,
+  CHAT_GROUP_COUNT,
+} from "../constants/strings";
 
 type Nav = NativeStackNavigationProp<RootStackParamList, "Main">;
 
@@ -99,15 +116,15 @@ export function ChatListScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
       <View style={styles.header}>
-        <Text style={styles.title}>💬 聊天</Text>
+        <Text style={styles.title}>{CHAT_TITLE}</Text>
         {mode === "private" && (
           <Pressable
             onPress={handleNew}
             hitSlop={12}
             style={styles.newBtn}
-            accessibilityLabel="新建聊天"
+            accessibilityLabel={CHAT_NEW_A11Y}
           >
-            <Text style={styles.newBtnText}>＋</Text>
+            <Text style={styles.newBtnText}>{CHAT_NEW_BTN}</Text>
           </Pressable>
         )}
       </View>
@@ -124,7 +141,7 @@ export function ChatListScreen() {
               mode === "private" && styles.tabTextActive,
             ]}
           >
-            私聊
+            {CHAT_TAB_PRIVATE}
           </Text>
         </Pressable>
         <Pressable
@@ -137,7 +154,7 @@ export function ChatListScreen() {
               mode === "group" && styles.tabTextActive,
             ]}
           >
-            群聊
+            {CHAT_TAB_GROUP}
           </Text>
         </Pressable>
       </View>
@@ -179,8 +196,8 @@ function PrivateList(props: {
     return (
       <View style={styles.emptyWrap}>
         <Text style={styles.emptyEmoji}>💬</Text>
-        <Text style={styles.emptyText}>还没有聊天记录</Text>
-        <Text style={styles.emptyHint}>点右上角 + 开始一次新对话</Text>
+        <Text style={styles.emptyText}>{CHAT_EMPTY_PRIVATE}</Text>
+        <Text style={styles.emptyHint}>{CHAT_EMPTY_PRIVATE_HINT}</Text>
       </View>
     );
   }
@@ -205,12 +222,12 @@ function PrivateList(props: {
           >
             <View style={styles.avatar}>
               <Text style={styles.avatarText}>
-                {(s.topic || "新对话").slice(0, 1)}
+                {(s.topic || CHAT_DEFAULT_TOPIC).slice(0, 1)}
               </Text>
             </View>
             <View style={styles.rowMain}>
               <Text style={styles.rowTitle} numberOfLines={1}>
-                {s.topic || "新对话"}
+                {s.topic || CHAT_DEFAULT_TOPIC}
               </Text>
               {!!previewText(s) && (
                 <Text style={styles.rowPreview} numberOfLines={1}>
@@ -223,7 +240,9 @@ function PrivateList(props: {
                 {formatTimestamp(s.updated_at ?? s.created_at)}
               </Text>
               {typeof s.message_count === "number" && s.message_count > 0 && (
-                <Text style={styles.rowCount}>{s.message_count} 条</Text>
+                <Text style={styles.rowCount}>
+                  {CHAT_MESSAGE_COUNT_SUFFIX(s.message_count)}
+                </Text>
               )}
             </View>
           </Pressable>
@@ -231,7 +250,7 @@ function PrivateList(props: {
       </ScrollView>
       <Pressable style={styles.refreshHint} onPress={onRefresh}>
         <Text style={styles.refreshHintText}>
-          {loading ? "刷新中…" : "点此刷新"}
+          {loading ? CHAT_REFRESHING : CHAT_REFRESH_HINT}
         </Text>
       </Pressable>
     </View>
@@ -252,10 +271,10 @@ function GroupList(props: {
     return (
       <View style={styles.emptyWrap}>
         <Text style={styles.emptyEmoji}>👥</Text>
-        <Text style={styles.emptyText}>还没有群聊</Text>
-        <Text style={styles.emptyHint}>点此刷新</Text>
+        <Text style={styles.emptyText}>{CHAT_EMPTY_GROUP}</Text>
+        <Text style={styles.emptyHint}>{CHAT_EMPTY_GROUP_HINT}</Text>
         <Pressable style={styles.refreshBtn} onPress={onRefresh}>
-          <Text style={styles.refreshBtnText}>刷新</Text>
+          <Text style={styles.refreshBtnText}>{CHAT_REFRESH_BTN}</Text>
         </Pressable>
       </View>
     );
@@ -292,7 +311,7 @@ function GroupList(props: {
             </View>
             <View style={styles.rowMeta}>
               <Text style={styles.rowCount}>
-                👥 {g.member_count ?? g.members?.length ?? "—"}
+                {CHAT_GROUP_COUNT(g.member_count ?? g.members?.length ?? "—")}
               </Text>
             </View>
           </Pressable>
@@ -300,7 +319,7 @@ function GroupList(props: {
       </ScrollView>
       <Pressable style={styles.refreshHint} onPress={onRefresh}>
         <Text style={styles.refreshHintText}>
-          {loading ? "刷新中…" : "点此刷新"}
+          {loading ? CHAT_REFRESHING : CHAT_REFRESH_HINT}
         </Text>
       </Pressable>
     </View>

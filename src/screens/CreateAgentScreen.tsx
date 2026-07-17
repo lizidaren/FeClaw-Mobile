@@ -35,7 +35,11 @@ import type { RootStackParamList } from "../navigation/AppNavigator";
 
 type Nav = NativeStackNavigationProp<RootStackParamList, "CreateAgent">;
 
-/** 列表为空时显示的内置兜底模板（让用户至少能创建一个"通用" Agent） */
+/**
+ * 列表为空时显示的内置兜底模板（让用户至少能创建一个"通用" Agent）。
+ * fix(Bug-9): FALLBACK_TEMPLATES 在两处降级路径使用——listTemplates 返回空数组、
+ * 或 listTemplates 抛错——两者都可达，故不再删除。改用下方注释统一说明用途。
+ */
 const FALLBACK_TEMPLATES: AgentTemplate[] = [
   {
     id: "blank",

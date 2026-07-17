@@ -221,10 +221,14 @@ export const CANVAS_EDITOR_HTML = `<!DOCTYPE html>
       }
 
       // ── 录音 (MediaRecorder) ─────────────────────────────
+      // fix(Bug-5): 限制录音最长时间为 30 秒，超过自动停止。
+      // 长录音的 base64 >10MB 会被 postMessage 截断；MVP 阶段只支持短语音笔记。
+      var MAX_RECORDING_MS = 30 * 1000;
       var mediaRecorder = null;
       var audioChunks = [];
       var recordingStream = null;
       var recordingStartTime = 0;
+      var recordingTimeoutHandle = null;
 
       function startRecording() {
         if (mediaRecorder && mediaRecorder.state === "recording") {
@@ -268,6 +272,15 @@ export const CANVAS_EDITOR_HTML = `<!DOCTYPE html>
             };
             recordingStartTime = Date.now();
             mediaRecorder.start();
+            // 30 秒自动停止
+            if (recordingTimeoutHandle) {
+              clearTimeout(recordingTimeoutHandle);
+            }
+            recordingTimeoutHandle = setTimeout(function () {
+              if (mediaRecorder && mediaRecorder.state === "recording") {
+                try { mediaRecorder.stop(); } catch (e) { /* ignore */ }
+              }
+            }, MAX_RECORDING_MS);
             postToRN({ type: "recording_started" });
           })
           .catch(function (err) {
@@ -281,6 +294,11 @@ export const CANVAS_EDITOR_HTML = `<!DOCTYPE html>
       function stopRecording() {
         if (!mediaRecorder || mediaRecorder.state === "inactive") {
           return;
+        }
+        // 清理自动停止定时器
+        if (recordingTimeoutHandle) {
+          clearTimeout(recordingTimeoutHandle);
+          recordingTimeoutHandle = null;
         }
         var startedAt = recordingStartTime;
         mediaRecorder.onstop = function () {
@@ -346,34 +364,43 @@ export const CANVAS_EDITOR_HTML = `<!DOCTYPE html>
       }
 
       // 暴露给 RN 调用（部分平台通过 injectJavaScript 走 evaluateJavaScript 注入函数）
+      // fix(Bug-1): 直接调用对应逻辑，**不**再走 handleRNMessage 二次包装，
+      // 避免 injectJavaScript 传入的 JSON 字符串被重复解析/路由。
       window.__canvasEditorBridge = {
         load: function (json) {
           try {
             var data = typeof json === "string" ? JSON.parse(json) : json;
-            handleRNMessage({ type: "load", payload: data });
+            // 直接走 build(…)+bindChange()，不复用 handleRNMessage 的事件分发路径
+            var main = (data && Array.isArray(data.main)) ? data.main : [];
+            build({ main: main });
+            bindChange();
           } catch (e) {
             postToRN({ type: "error", payload: { message: "load: " + String(e) } });
           }
         },
         clear: function () {
-          handleRNMessage({ type: "clear" });
+          build({ main: [] });
+          bindChange();
         },
         command: function (json) {
           try {
             var data = typeof json === "string" ? JSON.parse(json) : json;
-            handleRNMessage({ type: "command", command: data && data.command });
+            var cmd = data && data.command;
+            // 直接调 executeCommand，不再经 handleRNMessage 包装
+            executeCommand(cmd);
           } catch (e) {
             postToRN({ type: "error", payload: { message: "command: " + String(e) } });
           }
         },
         startRecording: function () {
-          handleRNMessage({ type: "start_recording" });
+          // 录音命令直发 startRecording，不二次路由
+          startRecording();
         },
         stopRecording: function () {
-          handleRNMessage({ type: "stop_recording" });
+          stopRecording();
         },
         playAudio: function (url) {
-          handleRNMessage({ type: "play_audio", url: url });
+          playAudio(url);
         },
         getValue: function () {
           if (!instance || !instance.getValue) return JSON.stringify({ main: [] });

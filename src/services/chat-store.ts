@@ -449,6 +449,9 @@ class ChatStore {
       let assistantContent = "";
       let resolvedSessionId: string | null = targetSessionId;
       let resolvedTopic: string | null = this.state.currentTopic;
+      // fix(Bug-3): 即使底层 SSE 消费者已加去重，消费侧再守一道：
+      // 多次收到 done 事件只 break 一次。
+      let doneReceived = false;
 
       for await (const event of stream as AsyncIterable<ChatStreamEvent>) {
         if (abort.signal.aborted) break;
@@ -467,6 +470,8 @@ class ChatStore {
           throw new Error(errMsg);
         }
         if (ev.type === "done") {
+          if (doneReceived) continue;
+          doneReceived = true;
           break;
         }
 

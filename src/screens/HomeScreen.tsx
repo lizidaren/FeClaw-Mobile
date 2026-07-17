@@ -37,16 +37,56 @@ import type { RootStackParamList } from "../navigation/AppNavigator";
 import { zentrimStore, useZentrimStore } from "../services/zentrim-store";
 import { authStore } from "../services/auth-store";
 import type { ZentrimEntry } from "../types/api";
+import {
+  HOME_GREETING_LATE_NIGHT,
+  HOME_GREETING_MORNING,
+  HOME_GREETING_NOON,
+  HOME_GREETING_AFTERNOON,
+  HOME_GREETING_EVENING,
+  HOME_LOGOUT,
+  HOME_EMPTY_NOTICE,
+  HOME_CARD_TODO,
+  HOME_CARD_ACTIVE,
+  HOME_CARD_ALL,
+  HOME_NOTICE_TODO,
+  HOME_NOTICE_RECENT,
+  HOME_ERROR_HINT_PREFIX,
+  HOME_NOTICE_MODAL_TITLE,
+  HOME_NOTICE_FALLBACK_BODY,
+  HOME_NOTICE_BTN_EXPAND,
+  HOME_NOTICE_BTN_ATTACH,
+  HOME_NOTICE_BTN_OK,
+  HOME_NOTICE_ATTACH_TITLE,
+  HOME_NOTICE_ATTACH_BODY,
+  HOME_NOTICE_OK_TEXT,
+  HOME_ALL_NOTES_TITLE,
+  HOME_ALL_NOTES_CLOSE,
+  HOME_ALL_NOTES_EMPTY,
+  HOME_DEV_ALERT_TITLE,
+  HOME_DEV_ALERT,
+  HOME_OK,
+  HOME_OPERATION_FAIL,
+  HOME_DELETE_TITLE,
+  HOME_DELETE_BODY,
+  HOME_DELETE_BTN,
+  HOME_CANCEL,
+  HOME_ACTION_ARCHIVE,
+  HOME_ACTION_DELETE,
+  HOME_ACTION_CANCEL,
+  HOME_EMPTY_TITLE,
+  HOME_TODO_DEV_HINT,
+  HOME_ACTIVE_DEV_HINT,
+} from "../constants/strings";
 
 /** 根据当前小时返回问候 */
 function getGreeting(): string {
   const h = new Date().getHours();
-  if (h < 6) return "🌙 夜深了，记得休息";
-  if (h < 11) return "☀️ 早上好，今天有物理课";
-  if (h < 14) return "🌞 中午好，吃完饭再学习吧";
-  if (h < 18) return "🌤️ 下午好，继续加油";
-  if (h < 22) return "🌙 晚上好，今天辛苦了";
-  return "🌙 夜深了，记得休息";
+  if (h < 6) return HOME_GREETING_LATE_NIGHT;
+  if (h < 11) return HOME_GREETING_MORNING;
+  if (h < 14) return HOME_GREETING_NOON;
+  if (h < 18) return HOME_GREETING_AFTERNOON;
+  if (h < 22) return HOME_GREETING_EVENING;
+  return HOME_GREETING_LATE_NIGHT;
 }
 
 /** 把 ISO 时间戳转成 MM-DD 字符串 */
@@ -108,11 +148,11 @@ function buildNoticeLine(entries: ZentrimEntry[]): string | null {
     (e.tags ?? []).includes("todo"),
   ).length;
   if (todoCount > 0) {
-    return `💡 你有 ${todoCount} 条待办事项还没处理`;
+    return HOME_NOTICE_TODO(todoCount);
   }
   const latest = entries[0];
   const dateLabel = formatDate(latest.created_at);
-  return `💡 最近的笔记更新于 ${dateLabel}`;
+  return HOME_NOTICE_RECENT(dateLabel);
 }
 
 export function HomeScreen() {
@@ -140,9 +180,9 @@ export function HomeScreen() {
     const activeCount = entries.filter((e) => !e.is_archived).length;
     const total = entries.length;
     return [
-      { kind: "todo", icon: "📋", title: "TODO", value: todoCount, alwaysColored: false },
-      { kind: "active", icon: "📈", title: "完成度追踪", value: activeCount, alwaysColored: false },
-      { kind: "all", icon: "📅", title: "全部笔记", value: total, alwaysColored: true },
+      { kind: "todo", icon: "📋", title: HOME_CARD_TODO, value: todoCount, alwaysColored: false },
+      { kind: "active", icon: "📈", title: HOME_CARD_ACTIVE, value: activeCount, alwaysColored: false },
+      { kind: "all", icon: "📅", title: HOME_CARD_ALL, value: total, alwaysColored: true },
     ];
   }, [entries]);
 
@@ -171,17 +211,17 @@ export function HomeScreen() {
       setActionEntryId(null);
     } else {
       const errMsg = zentrimStore.getState().error ?? "归档失败";
-      Alert.alert("操作失败", errMsg, [{ text: "知道了" }]);
+      Alert.alert(HOME_OPERATION_FAIL, errMsg, [{ text: HOME_OK }]);
     }
   }, [actionEntryId]);
 
   const onDelete = useCallback(() => {
     if (!actionEntryId) return;
     const id = actionEntryId;
-    Alert.alert("删除笔记", "确定删除？删除后不可恢复。", [
-      { text: "取消", style: "cancel" },
+    Alert.alert(HOME_DELETE_TITLE, HOME_DELETE_BODY, [
+      { text: HOME_CANCEL, style: "cancel" },
       {
-        text: "删除",
+        text: HOME_DELETE_BTN,
         style: "destructive",
         onPress: async () => {
           setActionPending(true);
@@ -191,7 +231,7 @@ export function HomeScreen() {
             setActionEntryId(null);
           } else {
             const errMsg = zentrimStore.getState().error ?? "删除失败";
-            Alert.alert("操作失败", errMsg, [{ text: "知道了" }]);
+            Alert.alert(HOME_OPERATION_FAIL, errMsg, [{ text: HOME_OK }]);
           }
         },
       },
@@ -217,10 +257,10 @@ export function HomeScreen() {
   const onCardPress = useCallback((kind: CardKind) => {
     switch (kind) {
       case "todo":
-        Alert.alert("提示", "待办功能开发中", [{ text: "知道了" }]);
+        Alert.alert(HOME_DEV_ALERT_TITLE, HOME_TODO_DEV_HINT, [{ text: HOME_OK }]);
         break;
       case "active":
-        Alert.alert("提示", "完成度追踪开发中", [{ text: "知道了" }]);
+        Alert.alert(HOME_DEV_ALERT_TITLE, HOME_ACTIVE_DEV_HINT, [{ text: HOME_OK }]);
         break;
       case "all":
         setAllNotesVisible(true);
@@ -229,28 +269,25 @@ export function HomeScreen() {
   }, []);
 
   // ── "注意到"弹窗按钮处理 ──
+  // fix(Bug-8): 不再是静默 stub——给用户可见反馈，避免"点了没反应"的误判。
   const onNoticeExpand = useCallback(() => {
-    // fix(P1): 不再是空 stub——关闭弹窗 + 控制台日志，便于后续接入搜索/详情页
-    console.log("[HomeScreen] notice: 展开看看");
     setNoticeVisible(false);
+    Alert.alert(HOME_DEV_ALERT_TITLE, HOME_DEV_ALERT, [{ text: HOME_OK }]);
   }, []);
 
   const onNoticeAttach = useCallback(() => {
-    // fix(P1): 不再是空 stub——给用户可见反馈，避免"点了没反应"的误判
-    console.log("[HomeScreen] notice: 加入附录");
     setNoticeVisible(false);
-    Alert.alert("已加入附录", "这条提示已加入今天的附录。", [{ text: "好的" }]);
+    Alert.alert(HOME_NOTICE_ATTACH_TITLE, HOME_NOTICE_ATTACH_BODY, [{ text: HOME_NOTICE_OK_TEXT }]);
   }, []);
 
   const onNoticeOk = useCallback(() => {
-    console.log("[HomeScreen] notice: OK");
     setNoticeVisible(false);
   }, []);
 
   // 渲染单条 entry
   const renderEntry = useCallback(
     ({ item }: { item: ZentrimEntry }) => {
-      const title = item.title || item.content_preview || "(无标题)";
+      const title = item.title || item.content_preview || HOME_EMPTY_TITLE;
       return (
         <Pressable
           style={styles.noteItem}
@@ -316,7 +353,7 @@ export function HomeScreen() {
         <View style={styles.headerRow}>
           <Text style={styles.greeting}>{greeting}</Text>
           <Pressable onPress={onLogout} hitSlop={8}>
-            <Text style={styles.logoutText}>登出</Text>
+            <Text style={styles.logoutText}>{HOME_LOGOUT}</Text>
           </Pressable>
         </View>
 
@@ -326,7 +363,7 @@ export function HomeScreen() {
             <Text style={styles.notice}>{noticeLine}</Text>
           </Pressable>
         ) : (
-          <Text style={styles.noticeEmpty}>开始你的第一条笔记吧</Text>
+          <Text style={styles.noticeEmpty}>{HOME_EMPTY_NOTICE}</Text>
         )}
 
         {/* 三张竖排卡片（每张可点击） */}
@@ -336,7 +373,7 @@ export function HomeScreen() {
 
         {/* 错误提示（不阻塞 UI） */}
         {error !== null && (
-          <Text style={styles.errorHint}>⚠️ {error}</Text>
+          <Text style={styles.errorHint}>{HOME_ERROR_HINT_PREFIX}{error}</Text>
         )}
       </ScrollView>
 
@@ -357,30 +394,30 @@ export function HomeScreen() {
           onPress={() => setNoticeVisible(false)}
         >
           <Pressable style={styles.modalCard} onPress={() => undefined}>
-            <Text style={styles.modalTitle}>Zentrim 提示</Text>
+            <Text style={styles.modalTitle}>{HOME_NOTICE_MODAL_TITLE}</Text>
             <Text style={styles.modalBody}>
               {noticeLine
                 ? noticeLine.replace(/^💡\s*/, "")
-                : "暂时没有需要关注的提示"}
+                : HOME_NOTICE_FALLBACK_BODY}
             </Text>
             <View style={styles.modalActions}>
               <TouchableOpacity
                 style={[styles.modalBtn, styles.modalBtnPrimary]}
                 onPress={onNoticeExpand}
               >
-                <Text style={styles.modalBtnTextPrimary}>展开看看</Text>
+                <Text style={styles.modalBtnTextPrimary}>{HOME_NOTICE_BTN_EXPAND}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.modalBtn}
                 onPress={onNoticeAttach}
               >
-                <Text style={styles.modalBtnText}>加入附录</Text>
+                <Text style={styles.modalBtnText}>{HOME_NOTICE_BTN_ATTACH}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.modalBtn}
                 onPress={onNoticeOk}
               >
-                <Text style={styles.modalBtnText}>OK</Text>
+                <Text style={styles.modalBtnText}>{HOME_NOTICE_BTN_OK}</Text>
               </TouchableOpacity>
             </View>
           </Pressable>
@@ -395,13 +432,13 @@ export function HomeScreen() {
       >
         <SafeAreaView style={styles.allNotesRoot} edges={["top", "left", "right"]}>
           <View style={styles.allNotesHeader}>
-            <Text style={styles.allNotesTitle}>全部笔记 · {entries.length}</Text>
+            <Text style={styles.allNotesTitle}>{HOME_ALL_NOTES_TITLE(entries.length)}</Text>
             <Pressable
               onPress={() => setAllNotesVisible(false)}
               hitSlop={8}
               style={styles.allNotesClose}
             >
-              <Text style={styles.allNotesCloseText}>关闭</Text>
+              <Text style={styles.allNotesCloseText}>{HOME_ALL_NOTES_CLOSE}</Text>
             </Pressable>
           </View>
           <FlatList
@@ -413,7 +450,7 @@ export function HomeScreen() {
             }
             ListEmptyComponent={
               !loading ? (
-                <Text style={styles.emptyHint}>暂无笔记，点击 ＋ 开始第一条</Text>
+                <Text style={styles.emptyHint}>{HOME_ALL_NOTES_EMPTY}</Text>
               ) : null
             }
             contentContainerStyle={styles.allNotesList}
@@ -437,7 +474,7 @@ export function HomeScreen() {
               style={styles.actionSheetBtn}
               onPress={() => void onArchive()}
             >
-              <Text style={styles.actionSheetText}>📦 归档</Text>
+              <Text style={styles.actionSheetText}>{HOME_ACTION_ARCHIVE}</Text>
             </TouchableOpacity>
             <View style={styles.actionSheetDivider} />
             <TouchableOpacity
@@ -445,7 +482,7 @@ export function HomeScreen() {
               onPress={() => onDelete()}
             >
               <Text style={[styles.actionSheetText, styles.actionSheetDelete]}>
-                🗑️ 删除
+                {HOME_ACTION_DELETE}
               </Text>
             </TouchableOpacity>
             <View style={styles.actionSheetDivider} />
@@ -453,7 +490,7 @@ export function HomeScreen() {
               style={styles.actionSheetBtn}
               onPress={() => setActionEntryId(null)}
             >
-              <Text style={styles.actionSheetCancelText}>取消</Text>
+              <Text style={styles.actionSheetCancelText}>{HOME_ACTION_CANCEL}</Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>

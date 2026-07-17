@@ -290,8 +290,18 @@ export class ApiClient {
     let done = false;
     let error: Error | null = null;
     let started = false;
+    // fix(Bug-3): 守卫 finish() 只调用一次。onload 与 onprogress 末尾清理、
+    // xhr.onabort、外部 AbortSignal 都可能走到 finish，需要幂等。
+    let finished = false;
+    // 跟踪已推送的事件签名，避免 onload 里对残余 buffer 重复 parseChunk。
+    const seenSignatures = new Set<string>();
 
     const notify = (ev: ChatStreamEvent) => {
+      // dedup：相同 type + 相同 content 的事件只推一次。
+      // 重点防御 [DONE] 哨兵和 onload 里被重复 parseChunk 的尾部事件。
+      const sig = `${ev.type}|${(ev as { content?: unknown }).content ?? ""}|${(ev as { message?: unknown }).message ?? ""}`;
+      if (seenSignatures.has(sig)) return;
+      seenSignatures.add(sig);
       const w = waiters.shift();
       if (w) {
         w({ value: ev, done: false });
@@ -301,6 +311,8 @@ export class ApiClient {
     };
 
     const finish = () => {
+      if (finished) return;
+      finished = true;
       done = true;
       while (waiters.length > 0) {
         const w = waiters.shift();
@@ -409,14 +421,19 @@ export class ApiClient {
         }
 
         // 状态码 OK（2xx）才 flush 残余 + 推送 done
+        // fix(Bug-3): 不要重复 parseChunk(buffer)；只解析剩余的 rest 拼到 buffer 后推一次。
+        // notify() 内部的 seenSignatures 已为 [DONE] 等哨兵去重作为兜底。
         const rest = (xhr.responseText ?? "").slice(processedLen);
         if (rest) {
           buffer += rest;
           const events = parseChunk(buffer);
+          // 把未以 \n\n 结尾的部分保留在 buffer（与 onprogress 保持一致）
+          const lastSep = buffer.lastIndexOf("\n\n");
+          if (lastSep >= 0) {
+            buffer = buffer.slice(lastSep + 2);
+          }
           for (const ev of events) notify(ev);
         }
-        const finalEvents = parseChunk(buffer);
-        for (const ev of finalEvents) notify(ev);
         notify({ type: "done" });
         finish();
       };
@@ -572,6 +589,12 @@ export class ApiClient {
    * - 优先尝试 `POST /api/console/agents`（新控制台接口）
    * - 失败时降级到 `POST /api/user/agents`（老用户接口）
    *
+   * 降级策略（fix Bug-7）：
+   * - 400 / 401 / 403 / 422：客户端错误，不降级（避免把鉴权/参数错误当成接口不存在）
+   * - 404 / 501 / 503：接口不存在或暂不可用，降级
+   * - 其他 4xx：降级兜底
+   * - 5xx / 网络错误：降级兜底
+   *
    * 返回 `{hash, name}`，hash 是 4~8 位 hex 字符串。
    */
   async createAgent(
@@ -586,11 +609,15 @@ export class ApiClient {
         body,
       );
     } catch (err) {
-      // 降级到老接口：忽略 template_id，只传 name
-      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
-        // 4xx 通常不是网络/接口不存在，向上抛
-        throw err;
+      if (err instanceof ApiError) {
+        // 客户端请求错误——不降级，直接抛
+        const NON_FALLBACK_4XX = new Set([400, 401, 403, 422]);
+        if (NON_FALLBACK_4XX.has(err.status)) {
+          throw err;
+        }
+        // 其他情况（含 404/501/503 及非 4xx）走降级
       }
+      // 降级到老接口：忽略 template_id，只传 name
       return await this.request<CreatedAgent>(
         "POST",
         "/api/user/agents",
@@ -698,6 +725,110 @@ export class ApiClient {
         try {
           // RN XHR.send 接受 FormData / string / Blob，TS 类型里叫 BodyInit_
           xhr.send(form as unknown as BodyInit_);
+        } catch (e) {
+          reject(e instanceof Error ? e : new Error("发送失败"));
+        }
+      },
+    );
+  }
+
+  /**
+   * 上传 base64 二进制内容（不带 data: 前缀）到 /api/upload。
+   * fix(Bug-4): 录音是 base64 字符串，RN FormData 的 file 对象要求 uri 指向本地文件，
+   * 不接受 data: URL。这里把 base64 解码后以 application/octet-stream POST，
+   * 后端按 file_name + mime_type 落盘。
+   */
+  async uploadBase64(
+    base64: string,
+    fileName: string,
+    mimeType: string,
+    signal?: AbortSignal,
+  ): Promise<{ url: string; size?: number; mime?: string }> {
+    const url = `${this.baseUrl}/api/upload`;
+    // base64 → Uint8Array
+    let bytes: Uint8Array;
+    try {
+      // atob 在 RN/Hermes 中可用（polyfilled）；用 globalThis 访问避免 TS 报错
+      const atobFn = (globalThis as { atob?: (s: string) => string }).atob;
+      const binary = typeof atobFn === "function" ? atobFn(base64) : "";
+      const arr = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
+      bytes = arr;
+    } catch (e) {
+      throw new Error(
+        `uploadBase64: base64 解码失败: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+
+    return await new Promise<{ url: string; size?: number; mime?: string }>(
+      (resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", url, true);
+        xhr.setRequestHeader("Content-Type", "application/octet-stream");
+        // 告诉后端扩展名和 mime（很多后端按 header 取）
+        xhr.setRequestHeader("X-File-Name", encodeURIComponent(fileName));
+        xhr.setRequestHeader("X-File-Type", encodeURIComponent(mimeType));
+        if (this.token) {
+          xhr.setRequestHeader("Authorization", `Bearer ${this.token}`);
+        }
+
+        xhr.onload = () => {
+          if (xhr.status === 401) {
+            this.clearToken();
+            this.onUnauthorized?.();
+            reject(new ApiError(401, "未授权", null));
+            return;
+          }
+          if (xhr.status < 200 || xhr.status >= 300) {
+            reject(
+              new ApiError(
+                xhr.status,
+                xhr.responseText || `HTTP ${xhr.status}`,
+                xhr.responseText || null,
+              ),
+            );
+            return;
+          }
+          try {
+            const parsed = JSON.parse(xhr.responseText) as {
+              url?: string;
+              size?: number;
+              mime?: string;
+            };
+            if (!parsed.url) {
+              reject(new Error("上传响应缺少 url"));
+              return;
+            }
+            resolve({ url: parsed.url, size: parsed.size, mime: parsed.mime });
+          } catch (e) {
+            reject(e instanceof Error ? e : new Error("解析上传响应失败"));
+          }
+        };
+
+        xhr.onerror = () => reject(new Error("网络错误"));
+        xhr.onabort = () => reject(new Error("已取消"));
+
+        if (signal) {
+          if (signal.aborted) {
+            xhr.abort();
+          } else {
+            signal.addEventListener(
+              "abort",
+              () => {
+                try {
+                  xhr.abort();
+                } catch {
+                  /* ignore */
+                }
+              },
+              { once: true },
+            );
+          }
+        }
+
+        try {
+          // RN XHR.send 接受 ArrayBuffer/Uint8Array 等
+          xhr.send(bytes as unknown as BodyInit_);
         } catch (e) {
           reject(e instanceof Error ? e : new Error("发送失败"));
         }

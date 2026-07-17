@@ -32,19 +32,31 @@ export interface FormatToolbarProps {
 }
 
 /** 按钮定义：label + command 映射 */
-const ITEMS_LEFT: Array<{ label: string; icon: string; cmd: FormatCommand; a11y: string }> = [
+type FormatItem = {
+  label: string;
+  icon: string;
+  cmd: FormatCommand;
+  a11y: string;
+  /**
+   * fix(Bug-10): 标记此按钮在当前实现里是否有真实 handler。
+   * true → 隐藏（视为未实现）。父组件无需关心，内部统一处理。
+   */
+  hidden?: boolean;
+};
+
+const ITEMS_LEFT: FormatItem[] = [
   { label: "撤销", icon: "↩️", cmd: "undo", a11y: "撤销" },
   { label: "重做", icon: "↪️", cmd: "redo", a11y: "重做" },
 ];
 
-const ITEMS_INLINE: Array<{ label: string; icon: string; cmd: FormatCommand; a11y: string }> = [
+const ITEMS_INLINE: FormatItem[] = [
   { label: "粗体", icon: "B", cmd: "bold", a11y: "加粗" },
   { label: "斜体", icon: "I", cmd: "italic", a11y: "斜体" },
   { label: "下划线", icon: "U", cmd: "underline", a11y: "下划线" },
   { label: "删除线", icon: "S", cmd: "strikeout", a11y: "删除线" },
 ];
 
-const ITEMS_BLOCK: Array<{ label: string; icon: string; cmd: FormatCommand; a11y: string }> = [
+const ITEMS_BLOCK: FormatItem[] = [
   { label: "标题", icon: "H", cmd: "heading", a11y: "标题" },
   { label: "列表", icon: "≡", cmd: "list", a11y: "列表" },
 ];
@@ -52,21 +64,24 @@ const ITEMS_BLOCK: Array<{ label: string; icon: string; cmd: FormatCommand; a11y
 // fix(P1-4): React.memo 避免父组件 re-render 时整个工具栏重建
 export const FormatToolbar = React.memo(function FormatToolbar({ onCommand }: FormatToolbarProps) {
   const renderButton = useCallback(
-    (
-      item: { label: string; icon: string; cmd: FormatCommand; a11y: string },
-      bold: boolean,
-    ) => (
-      <TouchableOpacity
-        key={item.cmd}
-        style={styles.btn}
-        onPress={() => onCommand(item.cmd)}
-        activeOpacity={0.6}
-        accessibilityRole="button"
-        accessibilityLabel={item.a11y}
-      >
-        <Text style={[styles.icon, bold ? styles.iconBold : null]}>{item.icon}</Text>
-      </TouchableOpacity>
-    ),
+    (item: FormatItem, bold: boolean) => {
+      // fix(Bug-10): 如果按钮标记为 hidden 或 onCommand 缺失，直接返回 null。
+      // 这样添加新 command 但暂未实现时，仅需把 hidden=true，不再显示占位。
+      if (item.hidden) return null;
+      if (typeof onCommand !== "function") return null;
+      return (
+        <TouchableOpacity
+          key={item.cmd}
+          style={styles.btn}
+          onPress={() => onCommand(item.cmd)}
+          activeOpacity={0.6}
+          accessibilityRole="button"
+          accessibilityLabel={item.a11y}
+        >
+          <Text style={[styles.icon, bold ? styles.iconBold : null]}>{item.icon}</Text>
+        </TouchableOpacity>
+      );
+    },
     [onCommand],
   );
 

@@ -264,6 +264,14 @@ export function CanvasScreen({
   const [colorPanelOpen, setColorPanelOpen] = useState(false);
   const [pdfOpen, setPdfOpen] = useState(false);
   const [images, setImages] = useState<CanvasImage[]>(imagesFromData);
+  // fix(Bug-2): 卸载时落库需要读 latest state，但 useEffect cleanup 闭包捕获的是
+  // mount 时的 snapshot。用 ref 同步持有最新值，cleanup 里读 ref 而非 state。
+  const imagesRef = useRef<CanvasImage[]>(imagesFromData);
+  const strokesRef = useRef<Stroke[]>(propStrokes);
+  const entryIdRef = useRef<string | undefined>(entryId);
+  const disposedRef = useRef(false);
+  // 卸载时落库要读的元数据
+  const metadataRef = useRef<PageMetadata>(metadata);
 
   // canvas-editor（WebView 文字层）状态
   // editorEnabled: WebView 是否接收触控（true=文字模式，false=笔模式透传）
@@ -272,6 +280,20 @@ export function CanvasScreen({
   const pendingEditorContentRef = useRef<IElement[]>(loadedRichText);
   // WebView 内 canvas-editor 实例是否已就绪
   const editorReadyRef = useRef(false);
+
+  // 同步 images / strokes / entryId / metadata 到 ref，供 cleanup 时读取最新值
+  useEffect(() => {
+    imagesRef.current = images;
+  }, [images]);
+  useEffect(() => {
+    strokesRef.current = strokes;
+  }, [strokes]);
+  useEffect(() => {
+    entryIdRef.current = entryId;
+  }, [entryId]);
+  useEffect(() => {
+    metadataRef.current = metadata;
+  }, [metadata]);
 
   // 当 entry 加载完成时把 IElement[] 注入编辑器
   // fix(P1-render): 推迟到 microtask，避免与上一 commit 撞车
@@ -360,25 +382,29 @@ export function CanvasScreen({
   // ── 退出时落库（不自动保存，仅在卸载时） ──
   // 设计：用户点返回箭头或 ⋮ 菜单离开本页面 → 触发卸载 → 同步构造 blocks 并 PUT
   // 失败仅 console.warn，不阻塞路由返回
+  // fix(Bug-2): cleanup 闭包捕获的是 mount 时的 snapshot，会读到旧 state。
+  // 改为通过 ref 读取最新值，并加 disposed 守卫。
   useEffect(() => {
+    disposedRef.current = false;
     return () => {
+      disposedRef.current = true;
       const rich = pendingEditorContentRef.current;
       const textBlockContent = rich.length > 0 ? JSON.stringify(rich) : "";
+      const latestEntryId = entryIdRef.current;
+      const latestImages = imagesRef.current;
+      const latestStrokes = strokesRef.current;
+      const latestMetadata = metadataRef.current;
       // 只在有内容变更或已有 entryId 时落库
-      if (!textBlockContent && !entryId) return;
+      if (!textBlockContent && !latestEntryId) return;
 
       // 构造 blocks：保留 ink + 拍照图；追加 text block
       const blocks: Block[] = [];
-      // 现有 ink/photo block 数据已经在后端，PUT 整组会全量覆盖
-      // 这里只追加我们关心的新 text block；旧 ink block 保留在 ink block（仍由后端 GET canvas 拉回）
-      // 注：当前 api.updateBlocks 接受全量 blocks；为了不丢旧数据，
-      // 改为调用 updateBlocks 时把 ink block 一并提交（从当前 images 推导）
-      if (images.length > 0 || strokes.length > 0) {
+      if (latestImages.length > 0 || latestStrokes.length > 0) {
         blocks.push({
           type: "ink",
           content: JSON.stringify({
-            strokes,
-            images: images.map((img) => ({
+            strokes: latestStrokes,
+            images: latestImages.map((img) => ({
               id: img.id,
               source: img.source,
               x: img.x,
@@ -388,7 +414,7 @@ export function CanvasScreen({
               rotation: img.rotation,
               zIndex: img.zIndex,
             })),
-            metadata,
+            metadata: latestMetadata,
           }),
         });
       }
@@ -398,7 +424,7 @@ export function CanvasScreen({
 
       const persist = async () => {
         try {
-          let targetId = entryId;
+          let targetId = latestEntryId;
           if (!targetId) {
             const created = await api.createEntry({ type: "note" });
             targetId = created.id;
@@ -412,8 +438,6 @@ export function CanvasScreen({
       };
       void persist();
     };
-    // 仅在卸载时跑一次；依赖列表用 ref / state 取最新值（deps 不参与触发）
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── 工具栏回调 ──
@@ -531,17 +555,17 @@ export function CanvasScreen({
         stopRecordingTimer();
         const dur = event.payload.duration ?? 0;
         setRecordingDuration(dur);
-        // base64 → data URL → 上传到 /api/upload
         const { base64, mime } = event.payload;
         if (!base64) {
           console.warn("[CanvasScreen] 录音 base64 为空");
           return;
         }
         try {
-          // RN 的 fetch 支持 data URL 形式作为 uri；FileReader 也能用，但这里直接用 data URL 上传
-          const dataUrl = `data:${mime};base64,${base64}`;
+          // fix(Bug-4): 不再走 data URL + api.uploadFile。
+          // RN FormData 不支持 data: URI 作为文件源（multipart 期望真实文件）。
+          // 改用 api.uploadBase64：base64 解码后以 octet-stream 上传。
           const fileName = `recording-${Date.now()}.webm`;
-          const uploaded = await api.uploadFile(dataUrl, fileName, mime);
+          const uploaded = await api.uploadBase64(base64, fileName, mime);
           setRecordingUrl(uploaded.url);
           // 落库：创建/更新 entry 的 audio block
           await persistAudioBlock(uploaded.url, mime, dur);
