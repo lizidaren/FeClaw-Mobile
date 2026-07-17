@@ -4,9 +4,16 @@
  * 通信协议（postMessage）：
  *  - RN → WebView: { type: "load",   payload: { main: IElement[] } }  加载内容
  *  - RN → WebView: { type: "clear" }                                  清空
+ *  - RN → WebView: { type: "command", command: "bold"|... }           富文本命令
+ *  - RN → WebView: { type: "start_recording" }                        开始录音
+ *  - RN → WebView: { type: "stop_recording" }                         停止录音
+ *  - RN → WebView: { type: "play_audio", url }                        播放音频
  *  - WebView → RN: { type: "ready" }                                  初始化完成
  *  - WebView → RN: { type: "change", payload: { main: IElement[] } }  内容变更
  *  - WebView → RN: { type: "error", payload: { message } }            内部错误
+ *  - WebView → RN: { type: "recording_started" }                      录音开始
+ *  - WebView → RN: { type: "recording_complete", payload: { base64, mime, duration } }
+ *  - WebView → RN: { type: "recording_error", payload: { message } }  录音错误
  *
  * canvas-editor 没有 setValue API，所以 reload 内容走 destroy + recreate。
  * UMD 全局对象为 `window.Editor`（见 canvas-editor README）。
@@ -173,6 +180,168 @@ export const CANVAS_EDITOR_HTML = `<!DOCTYPE html>
         } else if (msg.type === "clear") {
           build({ main: [] });
           bindChange();
+        } else if (msg.type === "command") {
+          executeCommand(msg.command);
+        } else if (msg.type === "start_recording") {
+          startRecording();
+        } else if (msg.type === "stop_recording") {
+          stopRecording();
+        } else if (msg.type === "play_audio") {
+          playAudio(msg.url);
+        }
+      }
+
+      /**
+       * 路由富文本命令到 canvas-editor.command API
+       * 失败时上报 error，不抛异常
+       */
+      function executeCommand(cmd) {
+        if (!instance) {
+          postToRN({ type: "error", payload: { message: "command: editor not ready" } });
+          return;
+        }
+        var c = instance.command;
+        if (!c) {
+          postToRN({ type: "error", payload: { message: "command: instance.command missing" } });
+          return;
+        }
+        try {
+          if (cmd === "bold") c.executeBold && c.executeBold();
+          else if (cmd === "italic") c.executeItalic && c.executeItalic();
+          else if (cmd === "underline") c.executeUnderline && c.executeUnderline();
+          else if (cmd === "strikeout") c.executeStrikeout && c.executeStrikeout();
+          else if (cmd === "undo") c.executeUndo && c.executeUndo();
+          else if (cmd === "redo") c.executeRedo && c.executeRedo();
+          else if (cmd === "heading") c.executeSize && c.executeSize(24);
+          else if (cmd === "list") c.executeInsertList && c.executeInsertList({ type: "bulleted" });
+          else postToRN({ type: "error", payload: { message: "command: unknown " + cmd } });
+        } catch (e) {
+          postToRN({ type: "error", payload: { message: "command " + cmd + ": " + String(e) } });
+        }
+      }
+
+      // ── 录音 (MediaRecorder) ─────────────────────────────
+      var mediaRecorder = null;
+      var audioChunks = [];
+      var recordingStream = null;
+      var recordingStartTime = 0;
+
+      function startRecording() {
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+          // 已在录音中，幂等返回
+          return;
+        }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          postToRN({
+            type: "recording_error",
+            payload: { message: "当前环境不支持录音" },
+          });
+          return;
+        }
+        navigator.mediaDevices
+          .getUserMedia({ audio: true })
+          .then(function (stream) {
+            recordingStream = stream;
+            audioChunks = [];
+            try {
+              var mime = "audio/webm";
+              if (typeof MediaRecorder === "undefined") {
+                throw new Error("MediaRecorder not available");
+              }
+              if (!MediaRecorder.isTypeSupported(mime)) {
+                mime = ""; // 让浏览器选默认
+              }
+              mediaRecorder = mime
+                ? new MediaRecorder(stream, { mimeType: mime })
+                : new MediaRecorder(stream);
+            } catch (e) {
+              stream.getTracks().forEach(function (t) { t.stop(); });
+              recordingStream = null;
+              postToRN({
+                type: "recording_error",
+                payload: { message: "创建录音器失败: " + String(e) },
+              });
+              return;
+            }
+            mediaRecorder.ondataavailable = function (ev) {
+              if (ev.data && ev.data.size > 0) audioChunks.push(ev.data);
+            };
+            recordingStartTime = Date.now();
+            mediaRecorder.start();
+            postToRN({ type: "recording_started" });
+          })
+          .catch(function (err) {
+            postToRN({
+              type: "recording_error",
+              payload: { message: "麦克风权限被拒: " + String(err && err.message || err) },
+            });
+          });
+      }
+
+      function stopRecording() {
+        if (!mediaRecorder || mediaRecorder.state === "inactive") {
+          return;
+        }
+        var startedAt = recordingStartTime;
+        mediaRecorder.onstop = function () {
+          var duration = startedAt ? Math.round((Date.now() - startedAt) / 1000) : 0;
+          var blob = new Blob(audioChunks, { type: "audio/webm" });
+          var reader = new FileReader();
+          reader.onloadend = function () {
+            var dataUrl = reader.result || "";
+            var base64 = "";
+            var commaIdx = String(dataUrl).indexOf(",");
+            if (commaIdx >= 0) base64 = String(dataUrl).slice(commaIdx + 1);
+            postToRN({
+              type: "recording_complete",
+              payload: { base64: base64, mime: "audio/webm", duration: duration },
+            });
+          };
+          reader.onerror = function () {
+            postToRN({
+              type: "recording_error",
+              payload: { message: "读取录音失败" },
+            });
+          };
+          try {
+            reader.readAsDataURL(blob);
+          } catch (e) {
+            postToRN({
+              type: "recording_error",
+              payload: { message: "读取录音异常: " + String(e) },
+            });
+          }
+          if (recordingStream) {
+            recordingStream.getTracks().forEach(function (t) { t.stop(); });
+            recordingStream = null;
+          }
+          mediaRecorder = null;
+        };
+        try {
+          mediaRecorder.stop();
+        } catch (e) {
+          postToRN({
+            type: "recording_error",
+            payload: { message: "停止录音失败: " + String(e) },
+          });
+        }
+      }
+
+      function playAudio(url) {
+        if (!url) return;
+        try {
+          var a = new Audio(url);
+          a.play().catch(function (err) {
+            postToRN({
+              type: "error",
+              payload: { message: "play_audio: " + String(err) },
+            });
+          });
+        } catch (e) {
+          postToRN({
+            type: "error",
+            payload: { message: "play_audio: " + String(e) },
+          });
         }
       }
 
@@ -188,6 +357,23 @@ export const CANVAS_EDITOR_HTML = `<!DOCTYPE html>
         },
         clear: function () {
           handleRNMessage({ type: "clear" });
+        },
+        command: function (json) {
+          try {
+            var data = typeof json === "string" ? JSON.parse(json) : json;
+            handleRNMessage({ type: "command", command: data && data.command });
+          } catch (e) {
+            postToRN({ type: "error", payload: { message: "command: " + String(e) } });
+          }
+        },
+        startRecording: function () {
+          handleRNMessage({ type: "start_recording" });
+        },
+        stopRecording: function () {
+          handleRNMessage({ type: "stop_recording" });
+        },
+        playAudio: function (url) {
+          handleRNMessage({ type: "play_audio", url: url });
         },
         getValue: function () {
           if (!instance || !instance.getValue) return JSON.stringify({ main: [] });

@@ -1,8 +1,9 @@
 /**
  * 录音状态气泡
  *
- * 两种形态：
+ * 三种形态：
  * - 录音态（recording）：左上角小椭圆，🎧 + 时间码
+ * - 已录态（recorded）：波形占位 + 时间码 + 🔊 播放按钮
  * - 回放态（playback）：拉长占顶，含 [📝ASR] [🔊音轨] [📷照片] 三个入口按钮
  *   - 转写完成前（asrReady=false）不显示 ASR 按钮
  */
@@ -15,7 +16,7 @@ import {
   RECORDING_PHOTOS,
 } from "../constants/strings";
 
-export type RecordingMode = "recording" | "playback";
+export type RecordingMode = "recording" | "recorded" | "playback";
 
 export interface RecordingBubbleProps {
   mode: RecordingMode;
@@ -45,6 +46,23 @@ export const RecordingBubble = React.memo(function RecordingBubble({
       <View style={styles.recording}>
         <Text style={styles.recDot}>🎧</Text>
         <Text style={styles.recTime}>{timecode}</Text>
+      </View>
+    );
+  }
+
+  if (mode === "recorded") {
+    return (
+      <View style={styles.recorded}>
+        <Text style={styles.recTime}>{timecode}</Text>
+        <View style={styles.waveform} accessibilityLabel="音频波形占位" />
+        <TouchableOpacity
+          style={styles.playBtn}
+          onPress={onOpenAudio}
+          accessibilityRole="button"
+          accessibilityLabel="播放录音"
+        >
+          <Text style={styles.playIcon}>🔊</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -140,6 +158,40 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.15,
     shadowRadius: 4,
     elevation: 3,
+  },
+  recorded: {
+    position: "absolute",
+    left: 12,
+    top: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(33, 37, 41, 0.92)",
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  waveform: {
+    width: 80,
+    height: 18,
+    backgroundColor: "rgba(255,255,255,0.25)",
+    borderRadius: 4,
+    marginHorizontal: 8,
+  },
+  playBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  playIcon: {
+    fontSize: 14,
   },
   playTime: {
     color: "#FFFFFF",

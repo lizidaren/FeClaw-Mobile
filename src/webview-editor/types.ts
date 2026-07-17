@@ -29,10 +29,20 @@ export interface IEditorData {
 /** RN → WebView 消息（type discriminator） */
 export type EditorInboundMessage =
   | { type: "load"; payload: { main: IElement[] } }
-  | { type: "clear" };
+  | { type: "clear" }
+  | { type: "command"; command: string }
+  | { type: "start_recording" }
+  | { type: "stop_recording" }
+  | { type: "play_audio"; url: string };
 
 /** WebView → RN 消息 */
 export type EditorOutboundMessage =
   | { type: "ready" }
   | { type: "change"; payload: { main: IElement[] } }
-  | { type: "error"; payload: { message: string } };
+  | { type: "error"; payload: { message: string } }
+  | { type: "recording_started" }
+  | {
+      type: "recording_complete";
+      payload: { base64: string; mime: string; duration: number };
+    }
+  | { type: "recording_error"; payload: { message: string } };

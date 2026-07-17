@@ -1,15 +1,16 @@
 /**
  * 画布左侧竖排工具栏
  *
- * 4 个按钮：笔 / 橡皮 / 拍照 / 撤销
+ * 5 个按钮：笔 / 橡皮 / 拍照 / 撤销 / 录音
  * - ✏️ 笔 — 单击切到笔模式；已在笔模式再双击 → 打开颜色面板
  * - 🧹 橡皮 — 切到橡皮模式
  * - 📷 拍照 — 一键调用 onPhotoCapture
  * - ↩️ 撤销 — 调用 onUndo
+ * - 🎤 录音 — 点击开始/停止录音；录音中按钮显示红色脉冲
  */
 
-import React, { useMemo } from "react";
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import React, { useEffect, useMemo, useRef } from "react";
+import { Animated, Easing, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import {
   TOOLBAR_PEN,
@@ -35,6 +36,10 @@ export interface CanvasToolbarProps {
   onPenDoubleTap: () => void;
   onPhotoCapture: () => void;
   onUndo: () => void;
+  /** 录音按钮：开始/停止（WebView 端 MediaRecorder 驱动） */
+  onToggleRecording?: () => void;
+  /** 录音中：图标变红 + 脉冲 */
+  isRecording?: boolean;
 }
 
 // fix(P1-4): React.memo 避免父组件 re-render 导致工具栏不必要的重绘
@@ -46,6 +51,8 @@ export const CanvasToolbar = React.memo(function CanvasToolbar({
   onPenDoubleTap,
   onPhotoCapture,
   onUndo,
+  onToggleRecording,
+  isRecording = false,
 }: CanvasToolbarProps) {
   const isInk = activeTool === "ink";
   // 笔按钮手势：单击选中笔 / 双击（已在笔模式时）打开颜色面板
@@ -113,7 +120,69 @@ export const CanvasToolbar = React.memo(function CanvasToolbar({
         disabled={!canUndo}
         onPress={onUndo}
       />
+      <RecordingButton
+        isRecording={isRecording}
+        onPress={() => onToggleRecording?.()}
+      />
     </View>
+  );
+});
+
+/**
+ * 录音按钮：录音中显示红色脉冲动画。
+ * 使用 Animated.Value + 循环 loop 实现。
+ */
+const RecordingButton = React.memo(function RecordingButton({
+  isRecording,
+  onPress,
+}: {
+  isRecording: boolean;
+  onPress: () => void;
+}) {
+  const pulse = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (!isRecording) {
+      pulse.stopAnimation();
+      pulse.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1.18,
+          duration: 500,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 500,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => {
+      loop.stop();
+    };
+  }, [isRecording, pulse]);
+
+  return (
+    <TouchableOpacity
+      activeOpacity={0.6}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={isRecording ? "停止录音" : "开始录音"}
+      style={[styles.button, isRecording && styles.buttonRecording]}
+    >
+      <Animated.View style={{ transform: [{ scale: pulse }] }}>
+        <Text style={[styles.icon, isRecording && styles.iconRecording]}>🎤</Text>
+      </Animated.View>
+      <Text style={[styles.label, isRecording && styles.labelRecording]}>
+        {isRecording ? "停止" : "录音"}
+      </Text>
+    </TouchableOpacity>
   );
 });
 
@@ -218,5 +287,17 @@ const styles = StyleSheet.create({
   },
   labelDisabled: {
     color: "#999",
+  },
+  buttonRecording: {
+    backgroundColor: "rgba(220, 53, 69, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(220, 53, 69, 0.4)",
+  },
+  iconRecording: {
+    // 红色不透明度靠父按钮背景 + Text 默认色（系统颜色）即可
+  },
+  labelRecording: {
+    color: "#d32f2f",
+    fontWeight: "700",
   },
 });

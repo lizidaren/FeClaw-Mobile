@@ -44,10 +44,11 @@ import type {
 } from "../canvas/types";
 import { screenToDoc } from "../canvas/ViewportManager";
 import { CanvasToolbar } from "../components/CanvasToolbar";
-import { CanvasEditor, type CanvasEditorHandle } from "../components/CanvasEditor";
+import { CanvasEditor, type CanvasEditorHandle, type RecordingEvent } from "../components/CanvasEditor";
 import { DraftToggle } from "../components/DraftToggle";
 import { ThreeDotMenu, type CanvasInfo } from "../components/ThreeDotMenu";
 import { RecordingBubble, type RecordingMode } from "../components/RecordingBubble";
+import { FormatToolbar, type FormatCommand } from "../components/FormatToolbar";
 import { PdfImportDialog, type PdfPage } from "../components/PdfImportDialog";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { COLOR_PANEL_TITLE } from "../constants/strings";
@@ -290,6 +291,30 @@ export function CanvasScreen({
   }, [entryId, imagesFromData, loadedRichText]);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
 
+  // ── 录音状态（由 CanvasEditor.onRecordingEvent 驱动） ──
+  // - isRecording: WebView 端 MediaRecorder 是否正在录音
+  // - recordingStartAt: 本地计时起点（用于实时 mm:ss 显示）
+  // - recordingDuration: 录音完成时记录总时长
+  // - recordingUrl: 上传成功后保存的远端 URL
+  // - recordingPlaying: 播放态
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingStartAt, setRecordingStartAt] = useState<number>(0);
+  const [recordingDuration, setRecordingDuration] = useState<number>(0);
+  const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
+  const [recordingPlaying, setRecordingPlaying] = useState(false);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 强制重渲染（用于录音中的实时时间码 — 不更新 setState 避免多余渲染）
+  const [, forceTick] = useState(0);
+  const tick = useCallback(() => forceTick((n) => n + 1), []);
+
+  // 清理录音计时器
+  const stopRecordingTimer = useCallback(() => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+  }, []);
+
   // 订阅引擎状态变化，同步工具栏 UI（引擎由 ZentrimCanvas 创建，子 effect 先于本 effect 运行）
   // fix(P1-render): 初始 sync() 推迟到下一 microtask，避免在 React commit 阶段
   // 立即触发 setState（Fabric 报 "Should not already be working"）。
@@ -455,6 +480,140 @@ export function CanvasScreen({
     setInkColor(color);
     setColorPanelOpen(false);
   }, []);
+
+  // ── 浮动格式化工具栏：转发命令到 WebView ──
+  const handleFormatCommand = useCallback((cmd: FormatCommand) => {
+    try {
+      editorRef.current?.command?.(cmd);
+    } catch (e) {
+      console.warn("[CanvasScreen] command 失败", cmd, e);
+    }
+  }, []);
+
+  // ── 录音按钮：开始 / 停止 ──
+  const handleToggleRecording = useCallback(() => {
+    if (isRecording) {
+      try {
+        editorRef.current?.stopRecording?.();
+      } catch (e) {
+        console.warn("[CanvasScreen] stopRecording 失败", e);
+      }
+    } else {
+      try {
+        editorRef.current?.startRecording?.();
+      } catch (e) {
+        console.warn("[CanvasScreen] startRecording 失败", e);
+      }
+    }
+  }, [isRecording]);
+
+  // ── 录音生命周期事件：处理 base64 → 上传 → audio block ──
+  const handleRecordingEvent = useCallback(
+    async (event: RecordingEvent) => {
+      if (event.type === "recording_started") {
+        setIsRecording(true);
+        setRecordingStartAt(Date.now());
+        setRecordingDuration(0);
+        setRecordingUrl(null);
+        // 每秒 tick 一次更新气泡时间码
+        stopRecordingTimer();
+        recordingTimerRef.current = setInterval(tick, 500);
+        return;
+      }
+      if (event.type === "recording_error") {
+        console.warn("[CanvasScreen] 录音失败", event.payload.message);
+        setIsRecording(false);
+        stopRecordingTimer();
+        return;
+      }
+      if (event.type === "recording_complete") {
+        setIsRecording(false);
+        stopRecordingTimer();
+        const dur = event.payload.duration ?? 0;
+        setRecordingDuration(dur);
+        // base64 → data URL → 上传到 /api/upload
+        const { base64, mime } = event.payload;
+        if (!base64) {
+          console.warn("[CanvasScreen] 录音 base64 为空");
+          return;
+        }
+        try {
+          // RN 的 fetch 支持 data URL 形式作为 uri；FileReader 也能用，但这里直接用 data URL 上传
+          const dataUrl = `data:${mime};base64,${base64}`;
+          const fileName = `recording-${Date.now()}.webm`;
+          const uploaded = await api.uploadFile(dataUrl, fileName, mime);
+          setRecordingUrl(uploaded.url);
+          // 落库：创建/更新 entry 的 audio block
+          await persistAudioBlock(uploaded.url, mime, dur);
+        } catch (e) {
+          console.warn("[CanvasScreen] 上传录音失败", e);
+        }
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [stopRecordingTimer, tick],
+  );
+
+  /**
+   * 把 audio block 持久化到当前 entry。规则：
+   * - 若有 entryId：直接 updateBlocks（追加）
+   * - 若没有 entryId：先 createEntry，再 updateBlocks
+   * 注：后端 updateBlocks 是 PUT 全量覆盖，所以这里需要先 GET 现有 blocks。
+   * 简化方案：使用 ink 块已存在的逻辑（保留）；新加 audio 块追加到末尾。
+   */
+  const persistAudioBlock = useCallback(
+    async (url: string, mime: string, duration: number) => {
+      try {
+        let targetId = entryId;
+        if (!targetId) {
+          const created = await api.createEntry({ type: "note" });
+          targetId = created.id;
+        }
+        if (!targetId) return;
+        // 拉取现有 blocks，追加 audio 块后整组 PUT
+        let existing: Block[] = [];
+        try {
+          existing = await api.getBlocks(targetId);
+        } catch {
+          existing = [];
+        }
+        const audioBlock: Block = {
+          type: "audio",
+          content: JSON.stringify({ url, mime, duration }),
+        };
+        const next = [...existing, audioBlock];
+        await api.updateBlocks(targetId, next);
+      } catch (e) {
+        console.warn("[CanvasScreen] 持久化 audio block 失败", e);
+      }
+    },
+    [entryId],
+  );
+
+  // ── 播放录音：调 WebView Audio API ──
+  const handlePlayRecording = useCallback(() => {
+    if (!recordingUrl) return;
+    setRecordingPlaying(true);
+    try {
+      editorRef.current?.playAudio?.(recordingUrl);
+    } catch (e) {
+      console.warn("[CanvasScreen] playAudio 失败", e);
+    }
+    // WebView 的 Audio API 结束事件不传回 RN；这里 3 秒后粗略复位
+    setTimeout(() => setRecordingPlaying(false), 3000);
+  }, [recordingUrl]);
+
+  // 卸载时清理录音 timer
+  useEffect(() => {
+    return () => {
+      stopRecordingTimer();
+    };
+  }, [stopRecordingTimer]);
+
+  // 录音中的实时时间码（秒）
+  const recordingSeconds = isRecording
+    ? Math.floor((Date.now() - recordingStartAt) / 1000)
+    : recordingDuration;
 
   // ── 拍照 → 作为图片元素插入画布 ──
   const handlePhotoCapture = useCallback(async () => {
@@ -642,6 +801,7 @@ export function CanvasScreen({
               initialContent={loadedRichText}
               onChange={handleEditorChange}
               onReady={handleEditorReady}
+              onRecordingEvent={handleRecordingEvent}
               style={styles.editorFill}
             />
           </View>
@@ -654,7 +814,14 @@ export function CanvasScreen({
             onPenDoubleTap={handlePenDoubleTap}
             onPhotoCapture={handlePhotoCapture}
             onUndo={handleUndo}
+            onToggleRecording={handleToggleRecording}
+            isRecording={isRecording}
           />
+
+          {/* 浮动格式化工具栏：仅在文字模式（activeTool=null）显示 */}
+          {activeTool === null ? (
+            <FormatToolbar onCommand={handleFormatCommand} />
+          ) : null}
 
           <DraftToggle isDraft={isDraft} onToggle={handleToggleDraft} />
 
@@ -672,6 +839,13 @@ export function CanvasScreen({
               mode={recording.mode}
               seconds={recording.seconds}
               asrReady={recording.asrReady}
+            />
+          ) : isRecording || recordingUrl ? (
+            <RecordingBubble
+              mode={isRecording ? "recording" : "recorded"}
+              seconds={recordingSeconds}
+              asrReady={false}
+              onOpenAudio={handlePlayRecording}
             />
           ) : null}
         </View>

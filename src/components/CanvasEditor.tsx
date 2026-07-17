@@ -46,7 +46,24 @@ export interface CanvasEditorProps {
   onTouchStart?: (e: unknown) => void;
   onTouchMove?: (e: unknown) => void;
   onTouchEnd?: (e: unknown) => void;
+  /**
+   * 录音生命周期事件（来自 WebView 端 MediaRecorder）：
+   * - "recording_started" 录音已开始
+   * - "recording_complete" payload={ base64, mime, duration }
+   * - "recording_error" payload={ message }
+   * "recording_complete" 的 base64 已是裸 base64（不含 data: 前缀）。
+   */
+  onRecordingEvent?: (event: RecordingEvent) => void;
 }
+
+/** WebView → RN 录音事件 */
+export type RecordingEvent =
+  | { type: "recording_started" }
+  | {
+      type: "recording_complete";
+      payload: { base64: string; mime: string; duration: number };
+    }
+  | { type: "recording_error"; payload: { message: string } };
 
 export interface CanvasEditorHandle {
   /** 重新加载内容（destroy 当前实例 + 用新 main 重建） */
@@ -59,6 +76,20 @@ export interface CanvasEditorHandle {
   getContent: () => IElement[];
   /** 聚焦 WebView（唤起键盘）—— best-effort：先用 RN WebView.requestFocus，再用 JS 选中文本 */
   focus?: () => void;
+  /**
+   * 发送富文本命令到 WebView（bold/italic/.../undo/redo/heading/list）。
+   * 通过 window.__canvasEditorBridge.command(json) 注入。
+   * 未就绪时会被忽略（命令需要 canvas-editor 实例）。
+   */
+  command?: (cmd: string) => void;
+  /**
+   * 录音：开始 / 停止 / 播放。
+   * 通过 window.__canvasEditorBridge.{startRecording,stopRecording,playAudio} 注入。
+   * 由 RN 上层订阅 onRecordingEvent 处理生命周期事件。
+   */
+  startRecording?: () => void;
+  stopRecording?: () => void;
+  playAudio?: (url: string) => void;
 }
 
 export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
@@ -72,6 +103,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
       onTouchStart,
       onTouchMove,
       onTouchEnd,
+      onRecordingEvent,
     },
     ref,
   ) {
@@ -95,7 +127,16 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
     // 发送消息到 WebView（用 window.message + window.__canvasEditorBridge 双路径，
     // 兼容 Android/iOS 上的 react-native-webview 注入方式）
     const sendToWebView = useCallback(
-      (type: "load" | "clear", payload?: { main: IElement[] }) => {
+      (
+        type:
+          | "load"
+          | "clear"
+          | "command"
+          | "start_recording"
+          | "stop_recording"
+          | "play_audio",
+        payload?: { main: IElement[] } | { command: string } | { url: string },
+      ) => {
         const wv = webViewRef.current;
         if (!wv) return;
         const msg = payload ? { type, payload } : { type };
@@ -107,6 +148,22 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
           wv.injectJavaScript(fn);
         } else if (type === "clear") {
           const fn = `window.__canvasEditorBridge && window.__canvasEditorBridge.clear(); true;`;
+          wv.injectJavaScript(fn);
+        } else if (type === "command") {
+          const fn =
+            `window.__canvasEditorBridge && window.__canvasEditorBridge.command(${JSON.stringify(json)}); true;`;
+          wv.injectJavaScript(fn);
+        } else if (type === "start_recording") {
+          const fn =
+            `window.__canvasEditorBridge && window.__canvasEditorBridge.startRecording(); true;`;
+          wv.injectJavaScript(fn);
+        } else if (type === "stop_recording") {
+          const fn =
+            `window.__canvasEditorBridge && window.__canvasEditorBridge.stopRecording(); true;`;
+          wv.injectJavaScript(fn);
+        } else if (type === "play_audio" && payload) {
+          const fn =
+            `window.__canvasEditorBridge && window.__canvasEditorBridge.playAudio(${JSON.stringify((payload as { url: string }).url)}); true;`;
           wv.injectJavaScript(fn);
         }
       },
@@ -146,9 +203,16 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
         } else if (msg.type === "error") {
           // 仅日志，不抛出 —— canvas-editor 错误不应让画布崩溃
           console.warn("[CanvasEditor] webview error:", msg.payload?.message);
+        } else if (
+          msg.type === "recording_started" ||
+          msg.type === "recording_complete" ||
+          msg.type === "recording_error"
+        ) {
+          // 录音生命周期事件交给上层
+          onRecordingEvent?.(msg as RecordingEvent);
         }
       },
-      [onChange, onReady, sendToWebView],
+      [onChange, onReady, onRecordingEvent, sendToWebView],
     );
 
     // 外部 ref API
@@ -187,6 +251,18 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
           } catch {
             // ignore
           }
+        },
+        command(cmd: string) {
+          sendToWebView("command", { command: cmd });
+        },
+        startRecording() {
+          sendToWebView("start_recording");
+        },
+        stopRecording() {
+          sendToWebView("stop_recording");
+        },
+        playAudio(url: string) {
+          sendToWebView("play_audio", { url });
         },
       }),
       [sendToWebView],
