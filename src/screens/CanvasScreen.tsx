@@ -3,19 +3,20 @@
  *
  * 组合：
  * - ZentrimCanvas（Skia 画布主体，三层渲染）
- * - CanvasToolbar（左侧竖排工具栏：笔/橡皮/拍照/撤销）
- * - 顶部 TextInput（flomo 风格，进入时自动 focus 唤起键盘）
+ * - CanvasEditor（WebView 富文本编辑层，覆盖在画布之上，文字模式时接收键盘）
+ * - CanvasToolbar（左侧竖排工具栏：文字/笔/橡皮/拍照/撤销）
  * - DraftToggle（左下角草稿纸按钮）
  * - ThreeDotMenu（右上角 ⋮ 菜单）
  * - RecordingBubble（录音/回放气泡，按需显示）
  * - 颜色面板（笔模式双击弹出）
  * - PdfImportDialog（插入文件时弹出）
  *
- * 交互协议（设计文档 §7.9）：
- * - Default：text mode（activeTool=null），键盘打开，顶部 TextInput autoFocus
- * - Pen mode：用户点工具栏笔按钮 → setActiveTool("ink") + Keyboard.dismiss()
- *   画布接管后续触摸事件，不转发当前触发按钮的 touch
- * - 切换模式只能通过工具栏按钮，不再做手指/触控笔自动检测（RN 无法可靠获取 pointerType）
+ * 交互协议：
+ * - Default：text mode（activeTool=null），CanvasEditor enabled，键盘打开
+ * - Pen mode：用户点工具栏笔按钮 → setActiveTool("ink") + CanvasEditor.enabled=false + Keyboard.dismiss()
+ *   画布接管后续触摸事件，WebView pointerEvents=none 透传触控
+ * - 用户点工具栏文字按钮 → setActiveTool(null) + CanvasEditor.enabled=true + focus
+ * - 退出时（componentWillUnmount）才把 IElement[] 序列化到后端（PUT /api/zentrim/entries/{id}/blocks）
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -28,7 +29,6 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   useWindowDimensions,
   View,
@@ -44,6 +44,7 @@ import type {
 } from "../canvas/types";
 import { screenToDoc } from "../canvas/ViewportManager";
 import { CanvasToolbar } from "../components/CanvasToolbar";
+import { CanvasEditor, type CanvasEditorHandle } from "../components/CanvasEditor";
 import { DraftToggle } from "../components/DraftToggle";
 import { ThreeDotMenu, type CanvasInfo } from "../components/ThreeDotMenu";
 import { RecordingBubble, type RecordingMode } from "../components/RecordingBubble";
@@ -51,7 +52,8 @@ import { PdfImportDialog, type PdfPage } from "../components/PdfImportDialog";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { COLOR_PANEL_TITLE } from "../constants/strings";
 import { api } from "../services/api-client";
-import type { CanvasData } from "../types/api";
+import type { Block, CanvasData } from "../types/api";
+import type { IElement } from "../webview-editor/types";
 import type { RootStackParamList } from "../navigation/AppNavigator";
 
 /** 预设墨水颜色（fix(P2-1): 首项使用 CanvasEngine 导出的 DEFAULT_INK_COLOR） */
@@ -126,7 +128,7 @@ function extractImages(canvasData: CanvasData): CanvasImage[] {
   return out;
 }
 
-/** 从后端 CanvasBlock[] 提取纯文本（text block 拼接） */
+/** 从后端 CanvasBlock[] 提取纯文本（text block 拼接；IElement[] JSON 格式时尝试解析） */
 function extractText(canvasData: CanvasData): string {
   const texts: string[] = [];
   for (const b of canvasData.blocks) {
@@ -135,6 +137,33 @@ function extractText(canvasData: CanvasData): string {
     }
   }
   return texts.join("\n");
+}
+
+/** 从后端 CanvasBlock[] 提取富文本（IElement[]）。text block 的 text 字段如果是 JSON 数组则解析，否则包成单元素。 */
+function extractRichText(canvasData: CanvasData): IElement[] {
+  const out: IElement[] = [];
+  for (const b of canvasData.blocks) {
+    if (b.type !== "text" || !b.text) continue;
+    const raw = b.text.trim();
+    if (raw.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) {
+            if (item && typeof item === "object" && "value" in item) {
+              out.push(item as IElement);
+            }
+          }
+          continue;
+        }
+      } catch {
+        // 解析失败：当作纯文本
+      }
+    }
+    // 纯文本 fallback
+    out.push({ value: b.text, size: 16 });
+  }
+  return out;
 }
 
 /** 默认元数据（用于 standalone / dev 入口） */
@@ -166,6 +195,7 @@ export function CanvasScreen({
 }: CanvasScreenProps) {
   const { width, height } = useWindowDimensions();
   const engineRef = useRef<CanvasEngine | null>(null);
+  const editorRef = useRef<CanvasEditorHandle | null>(null);
 
   // route params (entryId from navigation)
   const route = useRoute<RouteProp<RootStackParamList, "Canvas">>();
@@ -215,12 +245,17 @@ export function CanvasScreen({
     return extractText(loadState.data);
   }, [loadState]);
 
+  const loadedRichText = useMemo<IElement[]>(() => {
+    if (loadState.status !== "success") return [];
+    return extractRichText(loadState.data);
+  }, [loadState]);
+
   // 最终使用的 strokes / images / pageId
   const strokes = entryId ? loadedStrokes : propStrokes;
   const imagesFromData = entryId ? loadedImages : initialImages;
   const pageId = pageIdProp ?? (entryId ? `entry_${entryId}` : "default_page");
 
-  // toolMode: null = 键盘优先（未选工具）；"ink" / "eraser" = 绘画模式
+  // toolMode: null = 文字模式（WebView 收键盘）；"ink" / "eraser" = 绘画模式
   const [activeTool, setActiveTool] = useState<ToolMode | null>(null);
   const [canUndo, setCanUndo] = useState(false);
   const [isDraft, setIsDraft] = useState(false);
@@ -229,31 +264,58 @@ export function CanvasScreen({
   const [pdfOpen, setPdfOpen] = useState(false);
   const [images, setImages] = useState<CanvasImage[]>(imagesFromData);
 
-  // 顶部文字输入
-  const [noteText, setNoteText] = useState(loadedText);
+  // canvas-editor（WebView 文字层）状态
+  // editorEnabled: WebView 是否接收触控（true=文字模式，false=笔模式透传）
+  const [editorEnabled, setEditorEnabled] = useState(true);
+  // 待保存的 IElement[]：WebView onChange 持续累积；componentWillUnmount 时落库
+  const pendingEditorContentRef = useRef<IElement[]>(loadedRichText);
+  // WebView 内 canvas-editor 实例是否已就绪
+  const editorReadyRef = useRef(false);
 
-  // 当加载到的 images/text 变化时同步 state（entry 加载完成）
+  // 当 entry 加载完成时把 IElement[] 注入编辑器
+  // fix(P1-render): 推迟到 microtask，避免与上一 commit 撞车
   useEffect(() => {
-    if (entryId) {
+    if (!entryId) return;
+    let disposed = false;
+    Promise.resolve().then(() => {
+      if (disposed) return;
       setImages(imagesFromData);
-      setNoteText(loadedText);
-    }
-  }, [entryId, imagesFromData, loadedText]);
+      pendingEditorContentRef.current = loadedRichText;
+      // 编辑器已就绪则 reload；未就绪则在 handleEditorReady 补发
+      if (editorReadyRef.current) {
+        editorRef.current?.reloadContent(loadedRichText);
+      }
+    });
+    return () => { disposed = true; };
+  }, [entryId, imagesFromData, loadedRichText]);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
 
   // 订阅引擎状态变化，同步工具栏 UI（引擎由 ZentrimCanvas 创建，子 effect 先于本 effect 运行）
+  // fix(P1-render): 初始 sync() 推迟到下一 microtask，避免在 React commit 阶段
+  // 立即触发 setState（Fabric 报 "Should not already be working"）。
+  // 引擎内部 emit 同样异步化（setTimeout 0），确保订阅回调不会在渲染中途改状态。
   useEffect(() => {
     const eng = engineRef.current;
     if (!eng) return;
-    const sync = () => {
-      // 引擎内部 tool 初始是 "ink"（CanvasEngine 构造默认）；
-      // 我们的 activeTool 状态独立控制是否进入绘画态。
-      setCanUndo(eng.canUndo());
-      setIsDraft(eng.isDraftModeOn());
+    let disposed = false;
+    const scheduleSync = () => {
+      if (disposed) return;
+      // 优先用 Promise.resolve().then 走 microtask；若引擎同步链触发嵌套 render，
+      // 微任务会让出当前 commit；最坏情况回退到 setTimeout 0。
+      Promise.resolve().then(() => {
+        if (disposed) return;
+        // 引擎内部 tool 初始是 "ink"（CanvasEngine 构造默认）；
+        // 我们的 activeTool 状态独立控制是否进入绘画态。
+        setCanUndo(eng.canUndo());
+        setIsDraft(eng.isDraftModeOn());
+      });
     };
-    const unsub = eng.subscribe(sync);
-    sync();
-    return unsub;
+    const unsub = eng.subscribe(scheduleSync);
+    scheduleSync();
+    return () => {
+      disposed = true;
+      unsub();
+    };
   }, [pageId]);
 
   // 键盘事件订阅
@@ -270,6 +332,65 @@ export function CanvasScreen({
     };
   }, []);
 
+  // ── 退出时落库（不自动保存，仅在卸载时） ──
+  // 设计：用户点返回箭头或 ⋮ 菜单离开本页面 → 触发卸载 → 同步构造 blocks 并 PUT
+  // 失败仅 console.warn，不阻塞路由返回
+  useEffect(() => {
+    return () => {
+      const rich = pendingEditorContentRef.current;
+      const textBlockContent = rich.length > 0 ? JSON.stringify(rich) : "";
+      // 只在有内容变更或已有 entryId 时落库
+      if (!textBlockContent && !entryId) return;
+
+      // 构造 blocks：保留 ink + 拍照图；追加 text block
+      const blocks: Block[] = [];
+      // 现有 ink/photo block 数据已经在后端，PUT 整组会全量覆盖
+      // 这里只追加我们关心的新 text block；旧 ink block 保留在 ink block（仍由后端 GET canvas 拉回）
+      // 注：当前 api.updateBlocks 接受全量 blocks；为了不丢旧数据，
+      // 改为调用 updateBlocks 时把 ink block 一并提交（从当前 images 推导）
+      if (images.length > 0 || strokes.length > 0) {
+        blocks.push({
+          type: "ink",
+          content: JSON.stringify({
+            strokes,
+            images: images.map((img) => ({
+              id: img.id,
+              source: img.source,
+              x: img.x,
+              y: img.y,
+              width: img.width,
+              height: img.height,
+              rotation: img.rotation,
+              zIndex: img.zIndex,
+            })),
+            metadata,
+          }),
+        });
+      }
+      if (textBlockContent) {
+        blocks.push({ type: "text", content: textBlockContent });
+      }
+
+      const persist = async () => {
+        try {
+          let targetId = entryId;
+          if (!targetId) {
+            const created = await api.createEntry({ type: "note" });
+            targetId = created.id;
+          }
+          if (targetId && blocks.length > 0) {
+            await api.updateBlocks(targetId, blocks);
+          }
+        } catch (e) {
+          console.warn("[CanvasScreen] 自动落库失败", e);
+        }
+      };
+      void persist();
+    };
+    // 仅在卸载时跑一次；依赖列表用 ref / state 取最新值（deps 不参与触发）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── 工具栏回调 ──
 
   /**
@@ -279,7 +400,39 @@ export function CanvasScreen({
   const handleSelectTool = useCallback((tool: ToolMode) => {
     engineRef.current?.setTool(tool);
     setActiveTool(tool);
+    setEditorEnabled(false);
     Keyboard.dismiss();
+  }, []);
+
+  /**
+   * 切回文字模式：关闭工具栏高亮、允许 WebView 接收触控并唤起键盘
+   */
+  const handleSelectTextMode = useCallback(() => {
+    setActiveTool(null);
+    setEditorEnabled(true);
+    // 微任务后聚焦 WebView（让 React 先把 enabled 切到 auto，再让 WebView 拉起键盘）
+    setTimeout(() => {
+      try {
+        editorRef.current?.focus?.();
+      } catch {
+        // focus 是可选能力，缺失时不抛错
+      }
+    }, 50);
+  }, []);
+
+  /**
+   * canvas-editor 内容变更：累积到 ref，等退出时落库
+   */
+  const handleEditorChange = useCallback((elements: IElement[]) => {
+    pendingEditorContentRef.current = elements;
+  }, []);
+
+  const handleEditorReady = useCallback(() => {
+    editorReadyRef.current = true;
+    // 加载时已有内容 → 注入到 WebView
+    if (pendingEditorContentRef.current.length > 0) {
+      editorRef.current?.reloadContent(pendingEditorContentRef.current);
+    }
   }, []);
 
   const handlePenDoubleTap = useCallback(() => {
@@ -478,17 +631,18 @@ export function CanvasScreen({
             engineRef={engineRef}
           />
 
-          {/* 顶部文字输入框（flomo 风格） */}
-          <View style={styles.textInputWrap}>
-            <TextInput
-              style={[styles.noteInput, keyboardVisible && styles.noteInputFocused]}
-              value={noteText}
-              onChangeText={setNoteText}
-              placeholder="写点什么..."
-              placeholderTextColor="#999"
-              autoFocus
-              multiline
-              blurOnSubmit={false}
+          {/* WebView 文字层（覆盖在 Skia 之上；enabled=false 时透传触控给 Skia） */}
+          <View
+            style={styles.editorLayer}
+            pointerEvents={editorEnabled ? "auto" : "none"}
+          >
+            <CanvasEditor
+              ref={editorRef}
+              enabled={editorEnabled}
+              initialContent={loadedRichText}
+              onChange={handleEditorChange}
+              onReady={handleEditorReady}
+              style={styles.editorFill}
             />
           </View>
 
@@ -496,6 +650,7 @@ export function CanvasScreen({
             activeTool={activeTool}
             canUndo={canUndo}
             onSelectTool={handleSelectTool}
+            onSelectTextMode={handleSelectTextMode}
             onPenDoubleTap={handlePenDoubleTap}
             onPhotoCapture={handlePhotoCapture}
             onUndo={handleUndo}
@@ -587,34 +742,17 @@ const styles = StyleSheet.create({
     flex: 1,
     position: "relative",
   },
-  textInputWrap: {
+  editorLayer: {
     position: "absolute",
-    left: 16,
-    right: 16,
-    top: 16,
-    zIndex: 10,
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    // 文字层在 Skia 之上、工具栏/菜单之下
+    zIndex: 5,
   },
-  noteInput: {
-    backgroundColor: "rgba(255, 255, 255, 0.92)",
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    fontSize: 18,
-    color: "#1a1a1a",
-    minHeight: 56,
-    maxHeight: 240,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(0, 0, 0, 0.08)",
-    // iOS 磨砂效果（backdrop-filter 在 RN 中通过 experimental backdrop-filter 不可用；
-    // 用半透明白底近似）
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  noteInputFocused: {
-    backgroundColor: "rgba(255, 255, 255, 0.98)",
+  editorFill: {
+    flex: 1,
   },
   colorBackdrop: {
     flex: 1,

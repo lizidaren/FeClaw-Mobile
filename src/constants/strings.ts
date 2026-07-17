@@ -6,6 +6,8 @@
 // ── CanvasToolbar ──
 export const TOOLBAR_PEN = "笔";
 export const TOOLBAR_PEN_A11Y = "笔（双击换颜色）";
+export const TOOLBAR_TEXT = "文字";
+export const TOOLBAR_TEXT_A11Y = "切换到文字模式";
 export const TOOLBAR_ERASER = "橡皮";
 export const TOOLBAR_PHOTO = "拍照";
 export const TOOLBAR_UNDO = "撤销";

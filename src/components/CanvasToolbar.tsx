@@ -14,6 +14,8 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import {
   TOOLBAR_PEN,
   TOOLBAR_PEN_A11Y,
+  TOOLBAR_TEXT,
+  TOOLBAR_TEXT_A11Y,
   TOOLBAR_ERASER,
   TOOLBAR_PHOTO,
   TOOLBAR_UNDO,
@@ -22,11 +24,13 @@ import {
 export type ToolMode = "ink" | "eraser";
 
 export interface CanvasToolbarProps {
-  /** 当前激活的工具；null 表示未选中（键盘模式，工具栏按钮全部灰色未选中态） */
+  /** 当前激活的工具；null 表示未选中（文字模式，工具栏按钮全部灰色未选中态） */
   activeTool: ToolMode | null;
   /** 是否有可撤销的笔划 */
   canUndo: boolean;
   onSelectTool: (tool: ToolMode) => void;
+  /** 切换到文字模式（仅在 activeTool !== null 时显示） */
+  onSelectTextMode?: () => void;
   /** 笔模式下双击触发（打开颜色面板） */
   onPenDoubleTap: () => void;
   onPhotoCapture: () => void;
@@ -38,6 +42,7 @@ export const CanvasToolbar = React.memo(function CanvasToolbar({
   activeTool,
   canUndo,
   onSelectTool,
+  onSelectTextMode,
   onPenDoubleTap,
   onPhotoCapture,
   onUndo,
@@ -70,6 +75,14 @@ export const CanvasToolbar = React.memo(function CanvasToolbar({
   }, [isInk, onPenDoubleTap, onSelectTool]);
   return (
     <View style={styles.container}>
+      <ToolbarButton
+        label={TOOLBAR_TEXT}
+        icon="⌨️"
+        active={activeTool === null}
+        inactive={false}
+        onPress={() => onSelectTextMode?.()}
+        accessibilityLabel={TOOLBAR_TEXT_A11Y}
+      />
       <GestureDetector gesture={penGesture}>
         <View
           style={[styles.button, isInk && styles.buttonActive, activeTool === null && styles.buttonInactive]}
@@ -112,6 +125,8 @@ interface ToolbarButtonProps {
   /** 未选中态（键盘模式）：灰色半透明图标，无高亮背景 */
   inactive?: boolean;
   onPress: () => void;
+  /** a11y 自定义标签 */
+  accessibilityLabel?: string;
 }
 
 // fix(P1-4): React.memo 避免每次父组件渲染都重建按钮
@@ -122,12 +137,15 @@ const ToolbarButton = React.memo(function ToolbarButton({
   disabled,
   inactive,
   onPress,
+  accessibilityLabel,
 }: ToolbarButtonProps) {
   return (
     <TouchableOpacity
       activeOpacity={0.6}
       disabled={disabled}
       onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel ?? label}
       style={[
         styles.button,
         active && styles.buttonActive,
