@@ -1,0 +1,42 @@
+diff --git a/node_modules/react-native-document-picker/android/src/main/java/com/reactnativedocumentpicker/RNDocumentPickerModule.java b/node_modules/react-native-document-picker/android/src/main/java/com/reactnativedocumentpicker/RNDocumentPickerModule.java
+index 2aca719..9e4db5e 100644
+--- a/node_modules/react-native-document-picker/android/src/main/java/com/reactnativedocumentpicker/RNDocumentPickerModule.java
++++ b/node_modules/react-native-document-picker/android/src/main/java/com/reactnativedocumentpicker/RNDocumentPickerModule.java
+@@ -15,10 +15,11 @@ import android.os.Bundle;
+ import android.os.AsyncTask;
++import android.os.Bundle;
+ import android.provider.DocumentsContract;
+ import android.provider.OpenableColumns;
+ import android.util.Log;
+ 
+ import androidx.annotation.NonNull;
+ 
+ import com.facebook.react.bridge.ActivityEventListener;
+ import com.facebook.react.bridge.Arguments;
+ import com.facebook.react.bridge.BaseActivityEventListener;
+-import com.facebook.react.bridge.GuardedResultAsyncTask;
+ import com.facebook.react.bridge.Promise;
+ import com.facebook.react.bridge.ReactApplicationContext;
+@@ -229,7 +229,7 @@ public void onShowActivityResult(int resultCode, Intent data, Promise promise) {
+     }
+   }
+ 
+-  private static class ProcessDataTask extends GuardedResultAsyncTask<ReadableArray> {
++  private static class ProcessDataTask extends AsyncTask<Void, Void, ReadableArray> {
+     private final WeakReference<Context> weakContext;
+     private final List<Uri> uris;
+     private final String copyTo;
+@@ -244,12 +244,12 @@ protected ProcessDataTask(ReactContext reactContext, List<Uri> uris, String copy
+     }
+ 
+     @Override
+-    protected ReadableArray doInBackgroundGuarded() {
++    protected ReadableArray doInBackground(Void... params) {
+       // ... same logic
+     }
+ 
+     @Override
+-    protected void onPostExecuteGuarded(ReadableArray readableArray) {
++    protected void onPostExecute(ReadableArray readableArray) {
+       promise.resolve(readableArray);
+     }
