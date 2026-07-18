@@ -124,6 +124,22 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
       setPointerEvents(enabled ? "auto" : "none");
     }, [enabled]);
 
+    // fix(pen-mode-unmount): 父组件在笔模式下会 unmount 本组件（不是只设
+    // pointerEvents=none）。卸载前把 lastContentRef 里的最新内容 flush 到
+    // onChange，让父组件的 pendingEditorContentRef 保持同步；remount 时
+    // initialContent 即来自此 ref，用户的编辑不会丢。
+    // 这是 best-effort：postMessage 队列里如果有更晚的 change 消息，
+    // 父组件的 ref 也会在下一次 onChange 回调时更新，不依赖本 cleanup。
+    useEffect(() => {
+      return () => {
+        try {
+          onChange?.(lastContentRef.current);
+        } catch {
+          // 卸载期 best-effort，吞掉异常不影响销毁流程
+        }
+      };
+    }, [onChange]);
+
     // 发送消息到 WebView（用 window.message + window.__canvasEditorBridge 双路径，
     // 兼容 Android/iOS 上的 react-native-webview 注入方式）
     const sendToWebView = useCallback(

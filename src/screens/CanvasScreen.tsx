@@ -12,10 +12,13 @@
  * - PdfImportDialog（插入文件时弹出）
  *
  * 交互协议：
- * - Default：text mode（activeTool=null），CanvasEditor enabled，键盘打开
- * - Pen mode：用户点工具栏笔按钮 → setActiveTool("ink") + CanvasEditor.enabled=false + Keyboard.dismiss()
- *   画布接管后续触摸事件，WebView pointerEvents=none 透传触控
- * - 用户点工具栏文字按钮 → setActiveTool(null) + CanvasEditor.enabled=true + focus
+ * - Default：text mode（activeTool=null），CanvasEditor mounted，键盘打开
+ * - Pen mode：用户点工具栏笔按钮 → setActiveTool("ink") + 卸载 CanvasEditor + Keyboard.dismiss()
+ *   画布接管后续触摸事件，WebView 整体从渲染树中移除（不只是 pointerEvents=none），
+ *   避免 Android 底层 native view 拦截 touch
+ * - 用户点工具栏文字按钮 → setActiveTool(null) + 重新 mount CanvasEditor + focus
+ *   卸载前的 cleanup effect 会 flush 最后一次内容到 pendingEditorContentRef，
+ *   重新挂载时作为 initialContent 恢复
  * - 退出时（componentWillUnmount）才把 IElement[] 序列化到后端（PUT /api/zentrim/entries/{id}/blocks）
  */
 
@@ -998,21 +1001,26 @@ export function CanvasScreen({
             engineRef={engineRef}
           />
 
-          {/* WebView 文字层（覆盖在 Skia 之上；enabled=false 时透传触控给 Skia） */}
-          <View
-            style={styles.editorLayer}
-            pointerEvents={editorEnabled ? "auto" : "none"}
-          >
-            <CanvasEditor
-              ref={editorRef}
-              enabled={editorEnabled}
-              initialContent={loadedRichText}
-              onChange={handleEditorChange}
-              onReady={handleEditorReady}
-              onRecordingEvent={handleRecordingEvent}
-              style={styles.editorFill}
-            />
-          </View>
+          {/* WebView 文字层（覆盖在 Skia 之上）。
+              笔模式下直接 unmount 整个 WebView 而不是只设 pointerEvents=none：
+              Android 上 react-native-webview 底层 native view 仍会拦截 touch，
+              即便 JS 侧 pointerEvents=none 也无法透传到下层 Skia，
+              表现为"从图片上起笔画不上"+ 多次切换后彻底画不了。
+              卸载前 CanvasEditor 的 cleanup effect 会 flush 最后一次内容到
+              pendingEditorContentRef，remount 时作为 initialContent 恢复。 */}
+          {editorEnabled ? (
+            <View style={styles.editorLayer} pointerEvents="auto">
+              <CanvasEditor
+                ref={editorRef}
+                enabled={editorEnabled}
+                initialContent={pendingEditorContentRef.current}
+                onChange={handleEditorChange}
+                onReady={handleEditorReady}
+                onRecordingEvent={handleRecordingEvent}
+                style={styles.editorFill}
+              />
+            </View>
+          ) : null}
 
           <CanvasToolbar
             activeTool={activeTool}
