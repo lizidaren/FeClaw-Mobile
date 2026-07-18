@@ -191,6 +191,26 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
             sendToWebView("load", { main: pendingInitialRef.current });
             pendingInitialRef.current = null;
           }
+          // fix(Bug-1): WebView 加载完成后自动聚焦编辑器，唤起键盘。
+          // 用 onMessage('ready') 触发比 onLoad 更准 —— canvas-editor 实例
+          // 真正构建完才能 focus。光 onLoad 触发时 .canvas-editor__content
+          // 还没挂载，focus 会无声失败。
+          try {
+            const wv = webViewRef.current as unknown as {
+              requestFocus?: () => void;
+              injectJavaScript?: (js: string) => void;
+            } | null;
+            wv?.requestFocus?.();
+            wv?.injectJavaScript?.(
+              "(function(){var c=document.querySelector('.canvas-editor__content');" +
+                "if(c&&c.focus){c.focus();}" +
+                "var s=document.querySelector('.canvas-editor [contenteditable=\"true\"]');" +
+                "if(s&&s.focus){s.focus();}" +
+                "})(); true;",
+            );
+          } catch {
+            // best-effort：失败也不抛错
+          }
           onReady?.();
         } else if (msg.type === "change") {
           const main = msg.payload?.main ?? [];
@@ -285,6 +305,24 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
           originWhitelist={["https://*", "about:blank"]}
           source={{ html: CANVAS_EDITOR_HTML, baseUrl: "" }}
           onMessage={handleMessage}
+          // fix(Bug-1): WebView 文档加载完成时也试一次 focus 兜底。
+          // 某些平台/慢机器上 ready 事件可能晚到或丢；onLoad 先到能更早唤起键盘。
+          // 即便 .canvas-editor__content 还没挂载，注入的 JS 也会安全 no-op。
+          onLoad={() => {
+            const wv = webViewRef.current as unknown as {
+              requestFocus?: () => void;
+              injectJavaScript?: (js: string) => void;
+            } | null;
+            wv?.requestFocus?.();
+            wv?.injectJavaScript?.(
+              "(function(){" +
+                "var c=document.querySelector('.canvas-editor__content');" +
+                "if(c&&c.focus){c.focus();}" +
+                "var s=document.querySelector('.canvas-editor [contenteditable=\"true\"]');" +
+                "if(s&&s.focus){s.focus();}" +
+                "})(); true;",
+            );
+          }}
           // Android 软渲染避免硬件层在透明背景上显示黑色
           {...(Platform.OS === "android" ? { androidLayerType: "software" as const } : {})}
           // 编辑器自带滚动 / 缩放关掉，由 RN 端容器控制

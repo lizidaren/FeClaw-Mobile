@@ -1,14 +1,16 @@
 /**
  * Chat 会话列表页
  *
- * 顶部："💬 聊天" 标题 + "+" 新建按钮 / "👥 群聊" 切换
- * 列表：每个会话一行（topic / 更新时间 / 最后消息摘要）
+ * 顶部："💬 聊天" 标题 + "+" 新建按钮
+ * 列表：私聊 + 群聊混排，按更新时间倒序，每个一行
  *   - 私聊：单头像圆形 + 标题
  *   - 群聊：群头像（多人头像叠加占位）+ 标题 + "👥 N人"
  * 操作：点行 → ChatSession / GroupChatSession；下拉刷新；空状态文案
+ *
+ * fix(Bug-4): 删除原本的 私聊/群聊 Tab 切换，私聊和群聊混排展示。
  */
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -28,24 +30,31 @@ import {
   CHAT_TITLE,
   CHAT_NEW_BTN,
   CHAT_NEW_A11Y,
-  CHAT_TAB_PRIVATE,
-  CHAT_TAB_GROUP,
   CHAT_DEFAULT_TOPIC,
   CHAT_MESSAGE_COUNT_SUFFIX,
   CHAT_REFRESH_HINT,
   CHAT_REFRESHING,
   CHAT_EMPTY_PRIVATE,
   CHAT_EMPTY_PRIVATE_HINT,
-  CHAT_EMPTY_GROUP,
-  CHAT_EMPTY_GROUP_HINT,
-  CHAT_REFRESH_BTN,
   CHAT_GROUP_COUNT,
 } from "../constants/strings";
 
 type Nav = NativeStackNavigationProp<RootStackParamList, "Main">;
 
-/** 顶部 Tab：private（私聊） / group（群聊） */
-type ListMode = "private" | "group";
+/** 统一列表条目：私聊或群聊 */
+type UnifiedRow =
+  | {
+      kind: "private";
+      id: string;
+      session: ChatSessionInfo;
+      updatedAt: number;
+    }
+  | {
+      kind: "group";
+      id: string;
+      group: GroupInfo;
+      updatedAt: number;
+    };
 
 /** 把 ISO 时间转成 MM-DD HH:MM（本地时区） */
 function formatTimestamp(iso?: string): string {
@@ -68,10 +77,18 @@ function previewText(s: ChatSessionInfo): string {
   return "";
 }
 
+/** 解析 ISO 时间戳为毫秒；解析失败或缺失返回 0 */
+function parseTime(iso?: string): number {
+  if (!iso) return 0;
+  const t = new Date(iso).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+
 export function ChatListScreen() {
   const navigation = useNavigation<Nav>();
   const { sessions, loading, error, groups } = useChatStore();
-  const [mode, setMode] = useState<ListMode>("private");
+  // 私聊：过滤掉 group 类型
+  const privateSessions = sessions.filter((s) => s.type !== "group");
 
   useFocusEffect(
     useCallback(() => {
@@ -111,88 +128,66 @@ export function ChatListScreen() {
     void chatStore.fetchGroups();
   }, []);
 
-  const privateSessions = sessions.filter((s) => s.type !== "group");
+  // 合并私聊 + 群聊，按更新时间倒序
+  const rows = useMemo<UnifiedRow[]>(() => {
+    const privateRows: UnifiedRow[] = privateSessions.map((s) => ({
+      kind: "private",
+      id: `p:${s.session_id}`,
+      session: s,
+      updatedAt: parseTime(s.updated_at ?? s.created_at),
+    }));
+    const groupRows: UnifiedRow[] = groups.map((g) => ({
+      kind: "group",
+      id: `g:${g.group_id}`,
+      group: g,
+      updatedAt: parseTime(g.updated_at ?? g.created_at),
+    }));
+    return [...privateRows, ...groupRows].sort(
+      (a, b) => b.updatedAt - a.updatedAt,
+    );
+  }, [privateSessions, groups]);
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
       <View style={styles.header}>
         <Text style={styles.title}>{CHAT_TITLE}</Text>
-        {mode === "private" && (
-          <Pressable
-            onPress={handleNew}
-            hitSlop={12}
-            style={styles.newBtn}
-            accessibilityLabel={CHAT_NEW_A11Y}
-          >
-            <Text style={styles.newBtnText}>{CHAT_NEW_BTN}</Text>
-          </Pressable>
-        )}
-      </View>
-
-      {/* Tab 切换：私聊 / 群聊 */}
-      <View style={styles.tabBar}>
         <Pressable
-          style={[styles.tab, mode === "private" && styles.tabActive]}
-          onPress={() => setMode("private")}
+          onPress={handleNew}
+          hitSlop={12}
+          style={styles.newBtn}
+          accessibilityLabel={CHAT_NEW_A11Y}
         >
-          <Text
-            style={[
-              styles.tabText,
-              mode === "private" && styles.tabTextActive,
-            ]}
-          >
-            {CHAT_TAB_PRIVATE}
-          </Text>
-        </Pressable>
-        <Pressable
-          style={[styles.tab, mode === "group" && styles.tabActive]}
-          onPress={() => setMode("group")}
-        >
-          <Text
-            style={[
-              styles.tabText,
-              mode === "group" && styles.tabTextActive,
-            ]}
-          >
-            {CHAT_TAB_GROUP}
-          </Text>
+          <Text style={styles.newBtnText}>{CHAT_NEW_BTN}</Text>
         </Pressable>
       </View>
 
-      {error !== null && (mode === "private" ? privateSessions.length === 0 : groups.length === 0) && (
+      {error !== null && rows.length === 0 && (
         <Text style={styles.errorHint}>⚠️ {error}</Text>
       )}
 
-      {mode === "private" ? (
-        <PrivateList
-          sessions={privateSessions}
-          loading={loading}
-          onOpen={handleOpenPrivate}
-          onRefresh={handleRefresh}
-        />
-      ) : (
-        <GroupList
-          groups={groups}
-          loading={loading}
-          onOpen={handleOpenGroup}
-          onRefresh={handleRefresh}
-        />
-      )}
+      <UnifiedList
+        rows={rows}
+        loading={loading}
+        onOpenPrivate={handleOpenPrivate}
+        onOpenGroup={handleOpenGroup}
+        onRefresh={handleRefresh}
+      />
     </SafeAreaView>
   );
 }
 
-// ── 私聊列表 ──────────────────────────────────────────────────
+// ── 统一列表（私聊 + 群聊混排） ─────────────────────────────
 
-function PrivateList(props: {
-  sessions: ChatSessionInfo[];
+function UnifiedList(props: {
+  rows: UnifiedRow[];
   loading: boolean;
-  onOpen: (sessionId: string) => void;
+  onOpenPrivate: (sessionId: string) => void;
+  onOpenGroup: (group: GroupInfo) => void;
   onRefresh: () => void;
 }) {
-  const { sessions, loading, onOpen, onRefresh } = props;
+  const { rows, loading, onOpenPrivate, onOpenGroup, onRefresh } = props;
 
-  if (sessions.length === 0 && !loading) {
+  if (rows.length === 0 && !loading) {
     return (
       <View style={styles.emptyWrap}>
         <Text style={styles.emptyEmoji}>💬</Text>
@@ -204,48 +199,20 @@ function PrivateList(props: {
 
   return (
     <View style={styles.listWrap}>
-      {loading && sessions.length === 0 && (
+      {loading && rows.length === 0 && (
         <View style={styles.loadingWrap}>
           <ActivityIndicator color="#1976d2" />
         </View>
       )}
       <ScrollView>
-        {sessions.map((s, idx) => (
-          <Pressable
-            key={s.session_id}
-            style={[
-              styles.row,
-              idx === sessions.length - 1 && styles.rowLast,
-            ]}
-            onPress={() => onOpen(s.session_id)}
-            android_ripple={{ color: "#E0E0E0" }}
-          >
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>
-                {(s.topic || CHAT_DEFAULT_TOPIC).slice(0, 1)}
-              </Text>
-            </View>
-            <View style={styles.rowMain}>
-              <Text style={styles.rowTitle} numberOfLines={1}>
-                {s.topic || CHAT_DEFAULT_TOPIC}
-              </Text>
-              {!!previewText(s) && (
-                <Text style={styles.rowPreview} numberOfLines={1}>
-                  {previewText(s)}
-                </Text>
-              )}
-            </View>
-            <View style={styles.rowMeta}>
-              <Text style={styles.rowTime}>
-                {formatTimestamp(s.updated_at ?? s.created_at)}
-              </Text>
-              {typeof s.message_count === "number" && s.message_count > 0 && (
-                <Text style={styles.rowCount}>
-                  {CHAT_MESSAGE_COUNT_SUFFIX(s.message_count)}
-                </Text>
-              )}
-            </View>
-          </Pressable>
+        {rows.map((row, idx) => (
+          <UnifiedRowItem
+            key={row.id}
+            row={row}
+            isLast={idx === rows.length - 1}
+            onOpenPrivate={onOpenPrivate}
+            onOpenGroup={onOpenGroup}
+          />
         ))}
       </ScrollView>
       <Pressable style={styles.refreshHint} onPress={onRefresh}>
@@ -257,72 +224,78 @@ function PrivateList(props: {
   );
 }
 
-// ── 群聊列表 ──────────────────────────────────────────────────
+// ── 单行渲染 ──────────────────────────────────────────────
 
-function GroupList(props: {
-  groups: GroupInfo[];
-  loading: boolean;
-  onOpen: (group: GroupInfo) => void;
-  onRefresh: () => void;
+function UnifiedRowItem(props: {
+  row: UnifiedRow;
+  isLast: boolean;
+  onOpenPrivate: (sessionId: string) => void;
+  onOpenGroup: (group: GroupInfo) => void;
 }) {
-  const { groups, loading, onOpen, onRefresh } = props;
-
-  if (groups.length === 0 && !loading) {
+  const { row, isLast, onOpenPrivate, onOpenGroup } = props;
+  if (row.kind === "private") {
+    const s = row.session;
+    const title = s.topic || CHAT_DEFAULT_TOPIC;
     return (
-      <View style={styles.emptyWrap}>
-        <Text style={styles.emptyEmoji}>👥</Text>
-        <Text style={styles.emptyText}>{CHAT_EMPTY_GROUP}</Text>
-        <Text style={styles.emptyHint}>{CHAT_EMPTY_GROUP_HINT}</Text>
-        <Pressable style={styles.refreshBtn} onPress={onRefresh}>
-          <Text style={styles.refreshBtnText}>{CHAT_REFRESH_BTN}</Text>
-        </Pressable>
-      </View>
+      <Pressable
+        style={[styles.row, isLast && styles.rowLast]}
+        onPress={() => onOpenPrivate(s.session_id)}
+        android_ripple={{ color: "#E0E0E0" }}
+      >
+        <View style={styles.avatar}>
+          <Text style={styles.avatarText}>{title.slice(0, 1)}</Text>
+        </View>
+        <View style={styles.rowMain}>
+          <Text style={styles.rowTitle} numberOfLines={1}>
+            {title}
+          </Text>
+          {!!previewText(s) && (
+            <Text style={styles.rowPreview} numberOfLines={1}>
+              {previewText(s)}
+            </Text>
+          )}
+        </View>
+        <View style={styles.rowMeta}>
+          <Text style={styles.rowTime}>
+            {formatTimestamp(s.updated_at ?? s.created_at)}
+          </Text>
+          {typeof s.message_count === "number" && s.message_count > 0 && (
+            <Text style={styles.rowCount}>
+              {CHAT_MESSAGE_COUNT_SUFFIX(s.message_count)}
+            </Text>
+          )}
+        </View>
+      </Pressable>
     );
   }
-
+  // group
+  const g = row.group;
   return (
-    <View style={styles.listWrap}>
-      {loading && groups.length === 0 && (
-        <View style={styles.loadingWrap}>
-          <ActivityIndicator color="#1976d2" />
-        </View>
-      )}
-      <ScrollView>
-        {groups.map((g, idx) => (
-          <Pressable
-            key={g.group_id}
-            style={[
-              styles.row,
-              idx === groups.length - 1 && styles.rowLast,
-            ]}
-            onPress={() => onOpen(g)}
-            android_ripple={{ color: "#E0E0E0" }}
-          >
-            <GroupAvatar name={g.name} />
-            <View style={styles.rowMain}>
-              <Text style={styles.rowTitle} numberOfLines={1}>
-                {g.name}
-              </Text>
-              {!!g.description && (
-                <Text style={styles.rowPreview} numberOfLines={1}>
-                  {g.description}
-                </Text>
-              )}
-            </View>
-            <View style={styles.rowMeta}>
-              <Text style={styles.rowCount}>
-                {CHAT_GROUP_COUNT(g.member_count ?? g.members?.length ?? "—")}
-              </Text>
-            </View>
-          </Pressable>
-        ))}
-      </ScrollView>
-      <Pressable style={styles.refreshHint} onPress={onRefresh}>
-        <Text style={styles.refreshHintText}>
-          {loading ? CHAT_REFRESHING : CHAT_REFRESH_HINT}
+    <Pressable
+      style={[styles.row, isLast && styles.rowLast]}
+      onPress={() => onOpenGroup(g)}
+      android_ripple={{ color: "#E0E0E0" }}
+    >
+      <GroupAvatar name={g.name} />
+      <View style={styles.rowMain}>
+        <Text style={styles.rowTitle} numberOfLines={1}>
+          {g.name}
         </Text>
-      </Pressable>
-    </View>
+        {!!g.description && (
+          <Text style={styles.rowPreview} numberOfLines={1}>
+            {g.description}
+          </Text>
+        )}
+      </View>
+      <View style={styles.rowMeta}>
+        <Text style={styles.rowTime}>
+          {formatTimestamp(g.updated_at ?? g.created_at)}
+        </Text>
+        <Text style={styles.rowCount}>
+          {CHAT_GROUP_COUNT(g.member_count ?? g.members?.length ?? "—")}
+        </Text>
+      </View>
+    </Pressable>
   );
 }
 
@@ -374,29 +347,6 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: "300",
     lineHeight: 24,
-  },
-  tabBar: {
-    flexDirection: "row",
-    paddingHorizontal: 20,
-    marginBottom: 8,
-  },
-  tab: {
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: 16,
-    backgroundColor: "rgba(0,0,0,0.05)",
-    marginRight: 8,
-  },
-  tabActive: {
-    backgroundColor: "#1976d2",
-  },
-  tabText: {
-    fontSize: 13,
-    color: "#666",
-    fontWeight: "600",
-  },
-  tabTextActive: {
-    color: "#FFFFFF",
   },
   errorHint: {
     color: "#f57c00",
@@ -519,17 +469,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#999",
     marginBottom: 16,
-  },
-  refreshBtn: {
-    paddingHorizontal: 20,
-    paddingVertical: 8,
-    backgroundColor: "#1976d2",
-    borderRadius: 16,
-  },
-  refreshBtnText: {
-    color: "#FFFFFF",
-    fontSize: 14,
-    fontWeight: "600",
   },
   refreshHint: {
     paddingVertical: 10,

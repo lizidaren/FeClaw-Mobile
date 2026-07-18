@@ -235,6 +235,12 @@ const ToolbarButton = React.memo(function ToolbarButton({
 const styles = StyleSheet.create({
   container: {
     position: "absolute",
+    // fix(Bug-2): CanvasScreen 的 editorLayer 是 zIndex: 5，会盖在工具栏上面
+    // 拦截触控。给工具栏更高 zIndex 让 📷/🎤 按钮在文字模式下也能点到。
+    // 其他 UI（ThreeDotMenu / DraftToggle / FormatToolbar）同理高于 editorLayer。
+    // FormatToolbar 自己已经 zIndex: 20，所以这里取 10 即可（>5 但 <20）。
+    zIndex: 10,
+    elevation: 6,
     left: 12,
     top: "30%",
     flexDirection: "column",
@@ -247,7 +253,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
-    elevation: 3,
   },
   button: {
     width: 56,

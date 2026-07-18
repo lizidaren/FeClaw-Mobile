@@ -30,6 +30,7 @@ import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 
 import { api } from "../services/api-client";
+import { chatStore } from "../services/chat-store";
 import type { AgentTemplate } from "../types/api";
 import type { RootStackParamList } from "../navigation/AppNavigator";
 
@@ -113,10 +114,19 @@ export function CreateAgentScreen() {
       setSubmitting(true);
       try {
         await api.createAgent(tpl.name, tpl.id);
+        // fix(Bug-3): 创建成功后刷新聊天列表（异步）然后退回上一页，
+        // 保证 ChatListScreen 回到前台时立刻看到新会话。
         Alert.alert("创建成功", `向导「${tpl.name}」已创建`, [
           {
             text: "好的",
-            onPress: () => navigation.goBack(),
+            onPress: () => {
+              // 触发后台刷新（不 await，避免阻塞返回动画）；
+              // 失败仅 console.warn，不弹额外错误。
+              void chatStore.fetchSessions().catch((e) => {
+                console.warn("[CreateAgent] fetchSessions 失败", e);
+              });
+              navigation.goBack();
+            },
           },
         ]);
       } catch (err) {
@@ -136,10 +146,16 @@ export function CreateAgentScreen() {
     setSubmitting(true);
     try {
       await api.createAgent(name);
+      // fix(Bug-3): 同上 —— 手动创建路径也要刷新列表
       Alert.alert("创建成功", `向导「${name}」已创建`, [
         {
           text: "好的",
-          onPress: () => navigation.goBack(),
+          onPress: () => {
+            void chatStore.fetchSessions().catch((e) => {
+              console.warn("[CreateAgent] fetchSessions 失败", e);
+            });
+            navigation.goBack();
+          },
         },
       ]);
     } catch (err) {
