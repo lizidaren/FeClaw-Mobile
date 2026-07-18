@@ -117,9 +117,14 @@ class ZentrimStore {
   }
 
   /**
-   * 拍照创建 Entry：上传图片 → 创建 entry → 保存 photo block → 触发管线。
+   * 拍照创建 Entry：创建 entry → 上传图片（必须 entryId 存在）→ 保存 photo block。
    * 失败时已创建的 entry 仍保留在列表中。
    * 返回创建的 entry，失败返回 null。
+   *
+   * 修复 P0：之前的顺序是先 uploadFile 再 createEntry，但新 api.uploadFile
+   * 需要 entryId。新流程：先 createEntry（零成本），再 uploadFile（拿到 cos_key），
+   * 再 updateBlocks 写入 block 引用；后端 updateBlocks 响应里会带 server-assigned
+   * block.id（如果返回），用这个 id 去触发 processEntry。
    */
   async createPhotoEntry(
     fileUri: string,
@@ -129,18 +134,20 @@ class ZentrimStore {
   ): Promise<ZentrimEntry | null> {
     this.update({ loading: true, error: null });
     try {
-      // 1. 上传图片
+      // 1. 先创建 entry
+      const created = await api.createEntry({
+        title: fileName,
+        tags: ["photo"],
+      });
+      // 2. 上传图片（必须挂到 entry）
       const uploaded = await api.uploadFile(
         fileUri,
         fileName,
         mimeType,
         onProgress,
+        undefined,
+        created.id,
       );
-      // 2. 创建 entry
-      const created = await api.createEntry({
-        title: fileName,
-        tags: ["photo"],
-      });
       // 3. 保存 photo block
       const photoBlock: Block = {
         type: "photo",
@@ -152,11 +159,15 @@ class ZentrimStore {
         order: 0,
       };
       try {
-        await api.updateBlocks(created.id, [photoBlock]);
+        const upd = await api.updateBlocks(created.id, [photoBlock]);
         // 4. 触发管线（非阻塞，失败忽略）
-        if (photoBlock.id) {
+        //    修复：之前的代码用 photoBlock.id（前端未生成，永远 undefined），
+        //    现在用 updateBlocks 响应里后端返回的 block_id。
+        const returnedBlocks = (upd.blocks ?? []) as Array<{ id?: string; type?: string }>;
+        const serverBlock = returnedBlocks.find((b) => b.type === "photo") ?? returnedBlocks[0];
+        if (serverBlock?.id) {
           void api.processEntry(created.id, {
-            block_id: photoBlock.id,
+            block_id: serverBlock.id,
             cos_key: uploaded.url,
             block_type: "photo",
           });
@@ -177,7 +188,10 @@ class ZentrimStore {
   }
 
   /**
-   * 文件创建 Entry：上传文件 → 创建 entry → 保存 file block。
+   * 文件创建 Entry：先 createEntry → uploadFile → updateBlocks（file block）。
+   *
+   * 注意：后端 `processEntry` 仅支持 block_type ∈ {photo, audio, ink}，
+   * 不支持 "file"。所以这里不触发 processEntry（之前会发 400）。
    */
   async createFileEntry(
     fileUri: string,
@@ -187,16 +201,18 @@ class ZentrimStore {
   ): Promise<ZentrimEntry | null> {
     this.update({ loading: true, error: null });
     try {
+      const created = await api.createEntry({
+        title: fileName,
+        tags: ["file"],
+      });
       const uploaded = await api.uploadFile(
         fileUri,
         fileName,
         mimeType,
         onProgress,
+        undefined,
+        created.id,
       );
-      const created = await api.createEntry({
-        title: fileName,
-        tags: ["file"],
-      });
       const fileBlock: Block = {
         type: "file",
         cos_key: uploaded.url,
@@ -207,15 +223,9 @@ class ZentrimStore {
       };
       try {
         await api.updateBlocks(created.id, [fileBlock]);
-        if (fileBlock.id) {
-          void api.processEntry(created.id, {
-            block_id: fileBlock.id,
-            cos_key: uploaded.url,
-            block_type: "file",
-          });
-        }
+        // 不触发 processEntry：file 类型不被管线接受
       } catch {
-        // 同上，非阻塞
+        // 非阻塞
       }
       this.update({
         entries: [created, ...this.state.entries],

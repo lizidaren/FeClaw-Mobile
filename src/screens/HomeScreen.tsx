@@ -270,10 +270,25 @@ export function HomeScreen() {
 
   // ── "注意到"弹窗按钮处理 ──
   // fix(Bug-8): 不再是静默 stub——给用户可见反馈，避免"点了没反应"的误判。
+  // fix(P1): "展开看看" → 跳到最新一条 entry 的 Canvas 页（让"展开"语义落地）
   const onNoticeExpand = useCallback(() => {
     setNoticeVisible(false);
-    Alert.alert(HOME_DEV_ALERT_TITLE, HOME_DEV_ALERT, [{ text: HOME_OK }]);
-  }, []);
+    const latest = entries[0];
+    if (latest) {
+      // 有最近 entry：跳到 Canvas 详情页
+      goCanvasWithEntry(latest.id);
+      return;
+    }
+    // 没 entry：弹一条提示，告诉用户"还没有笔记"，并提供"新建一条"入口
+    Alert.alert(
+      HOME_NOTICE_MODAL_TITLE,
+      "还没有可以展开的笔记。点 ＋ 创建第一条吧。",
+      [
+        { text: "新建一条", onPress: goCanvas },
+        { text: HOME_CANCEL, style: "cancel" },
+      ],
+    );
+  }, [entries, goCanvas, goCanvasWithEntry]);
 
   const onNoticeAttach = useCallback(() => {
     setNoticeVisible(false);

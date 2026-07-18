@@ -108,27 +108,23 @@ export function CreateAgentScreen() {
   }, []);
 
   // ── 选模板创建 ───────────────────────────────────────────
+  // fix(P0): Mobile 端每个 Agent 始终只有一个 Session。
+  // 流程：createAgent → createChatSession → navigate("ChatSession")
+  // 不再"创建 Agent 后弹 Alert 然后退回"——直接进入会话。
   const handlePickTemplate = useCallback(
     async (tpl: AgentTemplate) => {
       if (submitting) return;
       setSubmitting(true);
       try {
-        await api.createAgent(tpl.name, tpl.id);
-        // fix(Bug-3): 创建成功后刷新聊天列表（异步）然后退回上一页，
-        // 保证 ChatListScreen 回到前台时立刻看到新会话。
-        Alert.alert("创建成功", `向导「${tpl.name}」已创建`, [
-          {
-            text: "好的",
-            onPress: () => {
-              // 触发后台刷新（不 await，避免阻塞返回动画）；
-              // 失败仅 console.warn，不弹额外错误。
-              void chatStore.fetchSessions().catch((e) => {
-                console.warn("[CreateAgent] fetchSessions 失败", e);
-              });
-              navigation.goBack();
-            },
-          },
-        ]);
+        const created = await api.createAgent(tpl.name, tpl.id);
+        // 立刻为这个 Agent 创建一个 Session（即使还没发消息，session 也存在）
+        const session = await api.createChatSession(created.hash);
+        // 后台刷新列表（不阻塞跳转）
+        void chatStore.fetchSessions().catch((e) => {
+          console.warn("[CreateAgent] fetchSessions 失败", e);
+        });
+        // 直接跳到聊天页：替换当前 CreateAgent 栈，避免用户按返回又回到这里
+        navigation.replace("ChatSession", { sessionId: session.session_id });
       } catch (err) {
         const m = err instanceof Error ? err.message : "创建失败";
         Alert.alert("创建失败", m, [{ text: "重试", style: "default" }]);
@@ -145,19 +141,13 @@ export function CreateAgentScreen() {
     if (!name || submitting) return;
     setSubmitting(true);
     try {
-      await api.createAgent(name);
-      // fix(Bug-3): 同上 —— 手动创建路径也要刷新列表
-      Alert.alert("创建成功", `向导「${name}」已创建`, [
-        {
-          text: "好的",
-          onPress: () => {
-            void chatStore.fetchSessions().catch((e) => {
-              console.warn("[CreateAgent] fetchSessions 失败", e);
-            });
-            navigation.goBack();
-          },
-        },
-      ]);
+      const created = await api.createAgent(name);
+      // fix(P0): 同样立即建 session + 进聊天页
+      const session = await api.createChatSession(created.hash);
+      void chatStore.fetchSessions().catch((e) => {
+        console.warn("[CreateAgent] fetchSessions 失败", e);
+      });
+      navigation.replace("ChatSession", { sessionId: session.session_id });
     } catch (err) {
       const m = err instanceof Error ? err.message : "创建失败";
       Alert.alert("创建失败", m);

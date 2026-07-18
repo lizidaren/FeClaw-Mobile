@@ -139,14 +139,31 @@ export class ApiClient {
 
   // ── Zentrim entries ───────────────────────────────────────
 
+  /**
+   * 拉取条目列表（时间线）。
+   *
+   * 后端（routers/zentrim.py GET /entries）实际返回 `ZentrimEntry[]`（裸数组），
+   * 查询参数为 `limit` / `before` / `include_archived`，不是 `page` / `page_size`。
+   * 为了兼容调用方已有的 `page / pageSize` 入参，函数内部用 `limit` 充当 pageSize，
+   * 并把裸数组包成 `PaginatedResponse` 形式返回。
+   */
   async getEntries(
     page: number = 1,
-    pageSize: number = 10,
+    pageSize: number = 50,
   ): Promise<PaginatedResponse<ZentrimEntry>> {
-    return this.request<PaginatedResponse<ZentrimEntry>>(
+    // 后端没有 page 参数；pageSize 直接作为 limit 传给后端（上限 100）
+    const limit = Math.max(1, Math.min(100, pageSize));
+    void page; // 留作未来分页扩展
+    const raw = await this.request<ZentrimEntry[]>(
       "GET",
-      `/api/zentrim/entries?page=${page}&page_size=${pageSize}`,
+      `/api/zentrim/entries?limit=${limit}&include_archived=false`,
     );
+    return {
+      items: raw,
+      total: raw.length,
+      page: 1,
+      page_size: raw.length,
+    };
   }
 
   async getEntry(entryId: string): Promise<ZentrimEntry> {
@@ -156,18 +173,34 @@ export class ApiClient {
     );
   }
 
+  /**
+   * 创建条目。后端 EntryCreateRequest 仅接受 title/tags/metadata，
+   * 老的 type/content 字段在提交前被剥离，避免后端 Pydantic 422。
+   */
   async createEntry(data: CreateEntryRequest): Promise<ZentrimEntry> {
-    return this.request<ZentrimEntry>("POST", "/api/zentrim/entries", data);
+    const body: Record<string, unknown> = {};
+    if (data.title !== undefined) body.title = data.title;
+    if (data.tags !== undefined) body.tags = data.tags;
+    if (data.metadata !== undefined) body.metadata = data.metadata;
+    return this.request<ZentrimEntry>("POST", "/api/zentrim/entries", body);
   }
 
+  /**
+   * 更新条目（PATCH）。后端 EntryPatchRequest 仅接受 title/tags/metadata。
+   * 老的 content/type/is_archived 字段被剥离（归档走专门端点）。
+   */
   async updateEntry(
     entryId: string,
     data: UpdateEntryRequest,
   ): Promise<ZentrimEntry> {
+    const body: Record<string, unknown> = {};
+    if (data.title !== undefined) body.title = data.title;
+    if (data.tags !== undefined) body.tags = data.tags;
+    if (data.metadata !== undefined) body.metadata = data.metadata;
     return this.request<ZentrimEntry>(
       "PATCH",
       `/api/zentrim/entries/${encodeURIComponent(entryId)}`,
-      data,
+      body,
     );
   }
 
@@ -194,19 +227,57 @@ export class ApiClient {
 
   // ── Zentrim blocks ────────────────────────────────────────
 
+  /**
+   * 读取 entry 的 blocks。
+   * 后端返回 `{blocks: [...]}`，这里把 `blocks` 字段解开成数组。
+   * 解开失败时回退到 `[]`，避免上游崩溃。
+   */
   async getBlocks(entryId: string): Promise<Block[]> {
-    return this.request<Block[]>(
-      "GET",
-      `/api/zentrim/entries/${encodeURIComponent(entryId)}/blocks`,
-    );
+    const raw = await this.request<
+      { blocks?: Block[] } | Block[]
+    >("GET", `/api/zentrim/entries/${encodeURIComponent(entryId)}/blocks`);
+    if (Array.isArray(raw)) return raw;
+    return Array.isArray(raw?.blocks) ? raw.blocks : [];
   }
 
-  async updateBlocks(entryId: string, blocks: Block[]): Promise<void> {
-    await this.request<unknown>(
+  /**
+   * 全量替换 entry 的 blocks。
+   * 后端期望请求体形如 `{blocks: [...]}`（与现有代码一致），
+   * 这里把数组里每个 block 的 `data` 字段展开到顶层（与后端 serialize_block 一致）。
+   *
+   * 返回新创建的 block 列表（带 server-assigned `id`），
+   * 供调用方拿到 block_id 后再触发管线（processEntry）。
+   */
+  async updateBlocks(
+    entryId: string,
+    blocks: Block[],
+  ): Promise<{ block_count: number; blocks?: Block[] }> {
+    // 把每个 block 展开为后端通用 dict（保留 type/data/text 等所有字段）
+    const body = {
+      blocks: blocks.map((b) => {
+        const obj: Record<string, unknown> = {};
+        if (b.id !== undefined) obj.id = b.id;
+        if (b.type !== undefined) obj.type = b.type;
+        if (b.content !== undefined) obj.content = b.content;
+        if (b.order !== undefined) obj.order = b.order;
+        if (b.cos_key !== undefined) obj.cos_key = b.cos_key;
+        if (b.thumbnail_url !== undefined) obj.thumbnail_url = b.thumbnail_url;
+        if (b.file_name !== undefined) obj.file_name = b.file_name;
+        if (b.mime !== undefined) obj.mime = b.mime;
+        if (b.size !== undefined) obj.size = b.size;
+        return obj;
+      }),
+    };
+    const res = await this.request<{
+      status: string;
+      block_count: number;
+      blocks?: Block[];
+    }>(
       "PUT",
       `/api/zentrim/entries/${encodeURIComponent(entryId)}/blocks`,
-      { blocks },
+      body,
     );
+    return { block_count: res.block_count, blocks: res.blocks };
   }
 
   async getEntryCanvas(entryId: string): Promise<CanvasData> {
@@ -238,18 +309,51 @@ export class ApiClient {
 
   // ── Search ────────────────────────────────────────────────
 
+  /**
+   * 搜索 Zentrim 条目。
+   * 后端（routers/zentrim.py GET /search）返回 `{query, count, results: [...]}`，
+   * 这里把 `results` 解开成 `ZentrimEntry[]`，与原签名保持兼容。
+   */
   async search(q: string): Promise<ZentrimEntry[]> {
     const qs = encodeURIComponent(q);
-    return this.request<ZentrimEntry[]>(
-      "GET",
-      `/api/zentrim/search?q=${qs}`,
-    );
+    const raw = await this.request<{
+      query: string;
+      count: number;
+      results: ZentrimEntry[];
+    }>("GET", `/api/zentrim/search?q=${qs}`);
+    return Array.isArray(raw?.results) ? raw.results : [];
   }
 
   // ── Chat ────────────────────────────────────────────────
 
   async listChatSessions(): Promise<ChatSessionInfo[]> {
     return this.request<ChatSessionInfo[]>("GET", "/api/chat/sessions");
+  }
+
+  /**
+   * 显式创建一个新的私聊会话（Mobile 一对一场景）。
+   *
+   * 后端：POST /api/chat/sessions，body={agent_hash}，
+   * response={session_id, topic, created_at, agent_hash}。
+   *
+   * 设计：Mobile 端每个 Agent 始终只有一个 Session。
+   * 创建 Agent 后立刻调本接口创建 Session，再 navigate 到聊天页，
+   * 避免依赖"第一条消息发出时自动建会话"的隐式行为。
+   */
+  async createChatSession(
+    agentHash: string,
+  ): Promise<{
+    session_id: string;
+    topic?: string;
+    created_at?: string;
+    agent_hash: string;
+  }> {
+    return this.request<{
+      session_id: string;
+      topic?: string;
+      created_at?: string;
+      agent_hash: string;
+    }>("POST", "/api/chat/sessions", { agent_hash: agentHash });
   }
 
   async getChatSession(sessionId: string): Promise<ChatSessionDetail> {
@@ -274,15 +378,43 @@ export class ApiClient {
    * 实现说明：React Native 的 fetch 不暴露 ReadableStream.body，
    * 因此使用 XMLHttpRequest + onprogress 来逐块读取 responseText，
    * 并按 "\n\n" 切分 SSE event。
+   *
+   * 群聊流：P0 — 后端 `routers/group.py` 没有 `/api/groups/{id}/stream` 端点。
+   * 后端群消息是 fire-and-forget 的异步 dispatch，没有 SSE 通道。
+   * 这里把 `body.group_id` 当作开关：群聊不发流式请求，调用方在
+   * `sendMessage` 完成后改走轮询 `listGroupMessages()`。
    */
   async chatStream(
     body: ChatStreamRequest,
     signal?: AbortSignal,
   ): Promise<AsyncIterableIterator<ChatStreamEvent>> {
-    // 群聊走 group 接口，否则走 chat stream
-    const url = body.group_id
-      ? `${this.baseUrl}/api/groups/${encodeURIComponent(body.group_id)}/stream`
-      : `${this.baseUrl}/api/chat/stream`;
+    // 群聊暂不支持流式：直接返回一个空迭代器（立即 done）。
+    // 调用方应在拿到 done 后触发 listGroupMessages() 拉取新消息。
+    if (body.group_id) {
+      const emptyIter: AsyncIterableIterator<ChatStreamEvent> = {
+        next: () =>
+          Promise.resolve({
+            value: undefined as unknown as ChatStreamEvent,
+            done: true,
+          }),
+        return: () =>
+          Promise.resolve({
+            value: undefined as unknown as ChatStreamEvent,
+            done: true,
+          }),
+        throw: () =>
+          Promise.resolve({
+            value: undefined as unknown as ChatStreamEvent,
+            done: true,
+          }),
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+      };
+      return emptyIter;
+    }
+
+    const url = `${this.baseUrl}/api/chat/stream`;
 
     type Resolver = (value: IteratorResult<ChatStreamEvent>) => void;
     const queue: ChatStreamEvent[] = [];
@@ -515,72 +647,265 @@ export class ApiClient {
 
   // ── Group chat ─────────────────────────────────────────────
 
+  /**
+   * 把后端 GroupResponse 规整为前端 GroupInfo。
+   * 后端字段：`id`, `name`, `announcement`, `owner_user_id`, `settings`,
+   * `context_isolation`, `max_rounds`, `created_at` (unix 秒), `member_count`
+   * 前端期望：`group_id`, `name`, `description` (=announcement), `member_count`,
+   * `created_at` (字符串), `members`（list 时通常不返回）
+   */
+  private normalizeGroup(raw: Record<string, unknown>): GroupInfo {
+    const id = String(raw.id ?? "");
+    const created =
+      typeof raw.created_at === "number"
+        ? new Date(raw.created_at * 1000).toISOString()
+        : (raw.created_at as string | undefined);
+    return {
+      group_id: id,
+      name: (raw.name as string) ?? "",
+      description: (raw.announcement as string) ?? "",
+      announcement: raw.announcement as string | undefined,
+      member_count:
+        typeof raw.member_count === "number" ? raw.member_count : undefined,
+      owner_user_id:
+        typeof raw.owner_user_id === "number"
+          ? raw.owner_user_id
+          : undefined,
+      context_isolation:
+        typeof raw.context_isolation === "boolean"
+          ? raw.context_isolation
+          : undefined,
+      max_rounds:
+        typeof raw.max_rounds === "number" ? raw.max_rounds : undefined,
+      settings: (raw.settings as Record<string, unknown>) ?? undefined,
+      created_at: created,
+    };
+  }
+
   async listGroups(): Promise<GroupInfo[]> {
-    return this.request<GroupInfo[]>("GET", "/api/groups");
+    const raw = await this.request<Array<Record<string, unknown>>>(
+      "GET",
+      "/api/groups",
+    );
+    if (!Array.isArray(raw)) return [];
+    return raw.map((g) => this.normalizeGroup(g));
   }
 
   async getGroup(groupId: string): Promise<GroupInfo> {
-    return this.request<GroupInfo>(
+    const raw = await this.request<Record<string, unknown>>(
       "GET",
       `/api/groups/${encodeURIComponent(groupId)}`,
     );
+    return this.normalizeGroup(raw);
   }
 
+  /**
+   * 群成员列表。
+   * 后端（MemberResponse）：agent_hash, role, is_silent, joined_at（unix 秒）
+   * 前端：member_id, name, role, is_silent, joined_at
+   */
   async listGroupMembers(groupId: string): Promise<GroupMember[]> {
-    return this.request<GroupMember[]>(
-      "GET",
-      `/api/groups/${encodeURIComponent(groupId)}/members`,
-    );
+    const raw = await this.request<
+      Array<{
+        agent_hash: string;
+        role?: string;
+        is_silent?: boolean;
+        joined_at?: number;
+      }>
+    >("GET", `/api/groups/${encodeURIComponent(groupId)}/members`);
+    if (!Array.isArray(raw)) return [];
+    return raw.map((m) => ({
+      member_id: m.agent_hash,
+      role: m.role,
+      is_silent: m.is_silent,
+      joined_at: m.joined_at,
+      kind: "agent" as const,
+    }));
   }
 
+  /**
+   * 群消息历史。
+   * 后端（MessageResponse）：id, sender_type, sender_hash, content,
+   *   message_type, attachments, mentions, round, created_at（unix 秒）
+   * 前端：message_id, group_id, sender_id, sender_name, content, timestamp
+   *
+   * 后端用 `before` (unix 秒) + `limit` (默认 50) 分页，
+   * 不是 `page` + `page_size`。这里保留入参命名但映射到后端语义。
+   */
   async listGroupMessages(
     groupId: string,
     page: number = 1,
     pageSize: number = 50,
+    before?: number,
   ): Promise<GroupMessage[]> {
-    return this.request<GroupMessage[]>(
+    void page; // 后端用 before/limit 分页，这里 page 留作未来扩展
+    const limit = Math.max(1, Math.min(200, pageSize));
+    const qs = new URLSearchParams();
+    qs.set("limit", String(limit));
+    if (before !== undefined) qs.set("before", String(before));
+    const raw = await this.request<
+      Array<{
+        id: string;
+        sender_type: "user" | "agent";
+        sender_hash?: string;
+        content: string;
+        message_type: string;
+        attachments?: Array<Record<string, unknown>>;
+        mentions?: string[];
+        round?: number;
+        created_at: number;
+      }>
+    >(
       "GET",
-      `/api/groups/${encodeURIComponent(groupId)}/messages?page=${page}&page_size=${pageSize}`,
+      `/api/groups/${encodeURIComponent(groupId)}/messages?${qs.toString()}`,
     );
+    if (!Array.isArray(raw)) return [];
+    return raw.map((m) => ({
+      message_id: m.id,
+      group_id: groupId,
+      sender_id: m.sender_type === "user" ? "user" : m.sender_hash ?? "",
+      sender_name: m.sender_hash ?? undefined,
+      sender_type: m.sender_type,
+      content: m.content ?? "",
+      message_type: m.message_type,
+      round: m.round,
+      mentions: m.mentions,
+      attachments: m.attachments as never,
+      timestamp:
+        typeof m.created_at === "number"
+          ? new Date(m.created_at * 1000).toISOString()
+          : undefined,
+    }));
   }
 
+  /**
+   * 发送群消息。
+   * 后端（POST /api/groups/{id}/messages）请求体是 SendMessageRequest：
+   *   content, mentions, attachments, message_type（默认 "text"）
+   * 响应是 `{status, msg_id}`，不是完整的 GroupMessage。
+   * 这里把前端 SendGroupMessageRequest 翻译成后端格式，并返回由前端补全的
+   * GroupMessage 伪对象（带 caller-side 时间戳），方便调用方继续渲染。
+   */
   async sendGroupMessage(
     groupId: string,
     body: SendGroupMessageRequest,
   ): Promise<GroupMessage> {
-    return this.request<GroupMessage>(
+    const backendBody: Record<string, unknown> = {
+      content: body.content,
+      message_type: body.message_type ?? "text",
+    };
+    if (body.mentions) backendBody.mentions = body.mentions;
+    if (body.attachments) backendBody.attachments = body.attachments;
+    // 老字段 image_url/file_path/file_name → 折叠到 attachments（保持兼容）
+    if (body.image_url || body.file_path) {
+      const att = (backendBody.attachments as Array<Record<string, unknown>>) ?? [];
+      if (body.image_url) att.push({ type: "image", url: body.image_url });
+      if (body.file_path)
+        att.push({ type: "file", path: body.file_path, name: body.file_name });
+      backendBody.attachments = att;
+    }
+    const res = await this.request<{ status: string; msg_id: string }>(
       "POST",
       `/api/groups/${encodeURIComponent(groupId)}/messages`,
-      body,
+      backendBody,
     );
+    return {
+      message_id: res.msg_id,
+      group_id: groupId,
+      sender_id: "user",
+      sender_name: "我",
+      content: body.content,
+      timestamp: new Date().toISOString(),
+    };
   }
 
   // ── Agents ─────────────────────────────────────────────────
 
+  /**
+   * 列出当前用户的 Agent。
+   * 后端无 `/api/agents` 端点；最接近的是 `/api/console/agents`，返回
+   * `{status, agents: [{id, hash, name, description, ...}], total}`。
+   * 这里把 console 端点解开为 `AgentInfo[]`，并把 `hash` 映射为 `agent_id`。
+   */
   async listAgents(): Promise<AgentInfo[]> {
-    return this.request<AgentInfo[]>("GET", "/api/agents");
+    const raw = await this.request<{
+      status: string;
+      agents: Array<{
+        id: number;
+        hash: string;
+        name: string;
+        description?: string;
+      }>;
+      total: number;
+    }>("GET", "/api/console/agents");
+    if (!raw || !Array.isArray(raw.agents)) return [];
+    return raw.agents.map((a) => ({
+      agent_id: a.hash,
+      name: a.name,
+      description: a.description,
+    }));
   }
 
+  /**
+   * 通过 agent_hash 获取单个 Agent。
+   * 后端有两条：
+   *   GET /api/console/agents/by-hash/{hash}   → {status, agent: {id, hash, name, ...}}
+   *   GET /api/user/agents/{hash}              → {hash, name, description, ...}
+   * 优先用 console 接口（更详细），降级到 user 接口。
+   */
   async getAgent(agentId: string): Promise<AgentInfo> {
-    return this.request<AgentInfo>(
-      "GET",
-      `/api/agents/${encodeURIComponent(agentId)}`,
-    );
+    try {
+      const raw = await this.request<{
+        status: string;
+        agent: {
+          id: number;
+          hash: string;
+          name: string;
+          description?: string;
+        };
+      }>("GET", `/api/console/agents/by-hash/${encodeURIComponent(agentId)}`);
+      if (raw?.agent) {
+        return {
+          agent_id: raw.agent.hash,
+          name: raw.agent.name,
+          description: raw.agent.description,
+        };
+      }
+    } catch (err) {
+      // 404 / 401 等 — 降级
+      if (err instanceof ApiError && [400, 401, 403, 422].includes(err.status)) {
+        throw err;
+      }
+    }
+    const raw = await this.request<{
+      hash: string;
+      name: string;
+      description?: string;
+    }>("GET", `/api/user/agents/${encodeURIComponent(agentId)}`);
+    return {
+      agent_id: raw.hash,
+      name: raw.name,
+      description: raw.description,
+    };
   }
 
   // ── Agent 模板 / 创建 ─────────────────────────────────────
 
   /**
    * 拉取可用的 Agent 模板列表。
-   * 后端约定：`GET /api/console/templates` → `{templates: AgentTemplate[]}`。
+   * 后端约定：`GET /api/console/templates` → `{status, templates: AgentTemplate[]}`。
    * 兼容老后端：若返回的是裸数组，也直接透传。
    */
   async listTemplates(): Promise<AgentTemplate[]> {
     const res = await this.request<
-      AgentTemplate[] | { templates: AgentTemplate[] }
+      | AgentTemplate[]
+      | { templates: AgentTemplate[] }
+      | { status: string; templates: AgentTemplate[] }
     >("GET", "/api/console/templates");
     if (Array.isArray(res)) return res;
-    if (res && Array.isArray(res.templates)) return res.templates;
+    if (res && Array.isArray((res as { templates: unknown }).templates)) {
+      return (res as { templates: AgentTemplate[] }).templates;
+    }
     return [];
   }
 
@@ -595,34 +920,43 @@ export class ApiClient {
    * - 其他 4xx：降级兜底
    * - 5xx / 网络错误：降级兜底
    *
-   * 返回 `{hash, name}`，hash 是 4~8 位 hex 字符串。
+   * 重要：console 接口的请求体是 `{name, agent_mode}`，
+   * 不是 `{name, template_id}`。template_id 通过后端初始化步骤
+   * （POST /api/console/agents/{id}/initialize）使用，这里不传。
+   *
+   * 响应形状：console → `{status, agent: {hash, name, ...}}`；
+   * user → `{hash, name, description}`。两种都做归一化。
    */
   async createAgent(
     name: string,
     templateId?: string,
   ): Promise<CreatedAgent> {
-    const body: CreateAgentRequest = { name, template_id: templateId };
+    void templateId; // console /agents 不接 template_id，留待 initialize 步骤使用
+    const consoleBody = { name, agent_mode: "classic" };
     try {
-      return await this.request<CreatedAgent>(
-        "POST",
-        "/api/console/agents",
-        body,
-      );
+      const res = await this.request<{
+        status: string;
+        agent: { id: number; hash: string; name: string };
+      }>("POST", "/api/console/agents", consoleBody);
+      if (res?.agent) {
+        return { hash: res.agent.hash, name: res.agent.name };
+      }
+      // 兼容老 console 实现：直接返回 {hash, name}
+      return res as unknown as CreatedAgent;
     } catch (err) {
       if (err instanceof ApiError) {
-        // 客户端请求错误——不降级，直接抛
         const NON_FALLBACK_4XX = new Set([400, 401, 403, 422]);
         if (NON_FALLBACK_4XX.has(err.status)) {
           throw err;
         }
-        // 其他情况（含 404/501/503 及非 4xx）走降级
       }
       // 降级到老接口：忽略 template_id，只传 name
-      return await this.request<CreatedAgent>(
+      const res = await this.request<CreatedAgent>(
         "POST",
         "/api/user/agents",
         { name },
       );
+      return res;
     }
   }
 
@@ -631,6 +965,16 @@ export class ApiClient {
   /**
    * 上传二进制文件（图片/普通文件）并返回后端给出的 url。
    * 进度回调 onProgress 可选，接收 0~1 之间的进度值。
+   *
+   * P0 fix: 后端没有通用 `POST /api/upload` 端点。最接近的接口是
+   * `POST /api/zentrim/attachments`（multipart，需要 entry_id + file_type），
+   * 它返回 `{status, entry_id, attachment: {key, url, mime, size, ...}}`。
+   *
+   * 调用方必须先有 entryId（先 `api.createEntry`）；没有时传入空字符串会失败，
+   * 上层应在更上层捕获错误。
+   *
+   * 对于聊天场景的图片/文件附件，后端目前没有直接的多 part upload 端点，
+   * 该函数把 content-type 当作 `file_type` 提交；后端会做白名单校验。
    */
   async uploadFile(
     fileUri: string,
@@ -638,8 +982,19 @@ export class ApiClient {
     mimeType: string,
     onProgress?: (pct: number) => void,
     signal?: AbortSignal,
+    entryId?: string,
   ): Promise<{ url: string; size?: number; mime?: string }> {
-    const url = `${this.baseUrl}/api/upload`;
+    if (!entryId) {
+      throw new Error(
+        "uploadFile 需要 entryId（后端 /api/zentrim/attachments 必须挂载到已存在的 entry）。" +
+          "调用方请先 api.createEntry() 再上传。",
+      );
+    }
+    const url = `${this.baseUrl}/api/zentrim/attachments`;
+    // 后端 file_type 是白名单字段（^[a-z0-9_-]{1,32}$）。从 mime 取第一段作为 file_type。
+    const fileType =
+      mimeType.split("/")[0]?.toLowerCase().replace(/[^a-z0-9_-]/g, "") ||
+      "file";
 
     return await new Promise<{ url: string; size?: number; mime?: string }>(
       (resolve, reject) => {
@@ -647,15 +1002,14 @@ export class ApiClient {
         xhr.open("POST", url, true);
 
         const form = new FormData();
-        // React Native 的 FormData 接受 { uri, name, type } 文件对象
-        // （不是标准 Blob）。RN 会读取 uri 指向的本地文件并附加到 multipart。
+        form.append("entry_id", entryId);
+        form.append("file_type", fileType);
         form.append("file", {
           uri: fileUri,
           name: fileName,
           type: mimeType,
         } as unknown as Blob);
 
-        // 不手动设置 Content-Type：浏览器/RN 会自动加 multipart/form-data + boundary
         if (this.token) {
           xhr.setRequestHeader("Authorization", `Bearer ${this.token}`);
         }
@@ -687,15 +1041,31 @@ export class ApiClient {
           }
           try {
             const parsed = JSON.parse(xhr.responseText) as {
+              status?: string;
+              attachment?: {
+                key?: string;
+                url?: string;
+                mime?: string;
+                size?: number;
+              };
               url?: string;
               size?: number;
               mime?: string;
             };
-            if (!parsed.url) {
+            // 两种可能形状：
+            //   旧客户端：{url, size, mime}
+            //   新服务端：{status, entry_id, attachment: {key, url, mime, size}}
+            const att = parsed.attachment;
+            const finalUrl = att?.url ?? parsed.url;
+            if (!finalUrl) {
               reject(new Error("上传响应缺少 url"));
               return;
             }
-            resolve({ url: parsed.url, size: parsed.size, mime: parsed.mime });
+            resolve({
+              url: finalUrl,
+              size: att?.size ?? parsed.size,
+              mime: att?.mime ?? parsed.mime ?? mimeType,
+            });
           } catch (e) {
             reject(e instanceof Error ? e : new Error("解析上传响应失败"));
           }
@@ -723,7 +1093,6 @@ export class ApiClient {
         }
 
         try {
-          // RN XHR.send 接受 FormData / string / Blob，TS 类型里叫 BodyInit_
           xhr.send(form as unknown as BodyInit_);
         } catch (e) {
           reject(e instanceof Error ? e : new Error("发送失败"));
@@ -733,22 +1102,28 @@ export class ApiClient {
   }
 
   /**
-   * 上传 base64 二进制内容（不带 data: 前缀）到 /api/upload。
-   * fix(Bug-4): 录音是 base64 字符串，RN FormData 的 file 对象要求 uri 指向本地文件，
-   * 不接受 data: URL。这里把 base64 解码后以 application/octet-stream POST，
-   * 后端按 file_name + mime_type 落盘。
+   * 上传 base64 二进制内容（不带 data: 前缀）到后端。
+   * 录音（WebView MediaRecorder）走这个接口。
+   *
+   * P0 fix: 后端没有 `POST /api/upload`；也没有专门的 base64/octet-stream
+   * 上传端点。降级方案：把 base64 解码成 Blob，再走 `uploadFile` 的 multipart 路径。
+   * 调用方需要先有 entryId。
    */
   async uploadBase64(
     base64: string,
     fileName: string,
     mimeType: string,
     signal?: AbortSignal,
+    entryId?: string,
   ): Promise<{ url: string; size?: number; mime?: string }> {
-    const url = `${this.baseUrl}/api/upload`;
-    // base64 → Uint8Array
+    if (!entryId) {
+      throw new Error(
+        "uploadBase64 需要 entryId；调用方请先 api.createEntry() 再上传录音。",
+      );
+    }
+    // base64 → Uint8Array → Blob-like object（RN FormData 接受 {uri, name, type}）
     let bytes: Uint8Array;
     try {
-      // atob 在 RN/Hermes 中可用（polyfilled）；用 globalThis 访问避免 TS 报错
       const atobFn = (globalThis as { atob?: (s: string) => string }).atob;
       const binary = typeof atobFn === "function" ? atobFn(base64) : "";
       const arr = new Uint8Array(binary.length);
@@ -759,81 +1134,11 @@ export class ApiClient {
         `uploadBase64: base64 解码失败: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
-
-    return await new Promise<{ url: string; size?: number; mime?: string }>(
-      (resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", url, true);
-        xhr.setRequestHeader("Content-Type", "application/octet-stream");
-        // 告诉后端扩展名和 mime（很多后端按 header 取）
-        xhr.setRequestHeader("X-File-Name", encodeURIComponent(fileName));
-        xhr.setRequestHeader("X-File-Type", encodeURIComponent(mimeType));
-        if (this.token) {
-          xhr.setRequestHeader("Authorization", `Bearer ${this.token}`);
-        }
-
-        xhr.onload = () => {
-          if (xhr.status === 401) {
-            this.clearToken();
-            this.onUnauthorized?.();
-            reject(new ApiError(401, "未授权", null));
-            return;
-          }
-          if (xhr.status < 200 || xhr.status >= 300) {
-            reject(
-              new ApiError(
-                xhr.status,
-                xhr.responseText || `HTTP ${xhr.status}`,
-                xhr.responseText || null,
-              ),
-            );
-            return;
-          }
-          try {
-            const parsed = JSON.parse(xhr.responseText) as {
-              url?: string;
-              size?: number;
-              mime?: string;
-            };
-            if (!parsed.url) {
-              reject(new Error("上传响应缺少 url"));
-              return;
-            }
-            resolve({ url: parsed.url, size: parsed.size, mime: parsed.mime });
-          } catch (e) {
-            reject(e instanceof Error ? e : new Error("解析上传响应失败"));
-          }
-        };
-
-        xhr.onerror = () => reject(new Error("网络错误"));
-        xhr.onabort = () => reject(new Error("已取消"));
-
-        if (signal) {
-          if (signal.aborted) {
-            xhr.abort();
-          } else {
-            signal.addEventListener(
-              "abort",
-              () => {
-                try {
-                  xhr.abort();
-                } catch {
-                  /* ignore */
-                }
-              },
-              { once: true },
-            );
-          }
-        }
-
-        try {
-          // RN XHR.send 接受 ArrayBuffer/Uint8Array 等
-          xhr.send(bytes as unknown as BodyInit_);
-        } catch (e) {
-          reject(e instanceof Error ? e : new Error("发送失败"));
-        }
-      },
-    );
+    // RN 没有 Blob 构造器；用临时 data URI 走 fetch → file:// uri 替代方案不可靠。
+    // 退而求其次：把 base64 包成 data: URL，再走普通 fetch 拉成 Blob，
+    // 再用 RN 的 {uri, type, name} FormData 形式提交。
+    const dataUrl = `data:${mimeType};base64,${base64}`;
+    return this.uploadFile(dataUrl, fileName, mimeType, undefined, signal, entryId);
   }
 }
 

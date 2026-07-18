@@ -22,6 +22,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -34,7 +35,7 @@ import {
   View,
 } from "react-native";
 import { launchCamera } from "react-native-image-picker";
-import { useRoute, type RouteProp } from "@react-navigation/native";
+import { useFocusEffect, useNavigation, useRoute, type RouteProp } from "@react-navigation/native";
 import { ZentrimCanvas } from "../canvas/ZentrimCanvas";
 import { CanvasEngine, DEFAULT_INK_COLOR, type ToolMode } from "../canvas/CanvasEngine";
 import type {
@@ -197,6 +198,7 @@ export function CanvasScreen({
   const { width, height } = useWindowDimensions();
   const engineRef = useRef<CanvasEngine | null>(null);
   const editorRef = useRef<CanvasEditorHandle | null>(null);
+  const navigation = useNavigation();
 
   // route params (entryId from navigation)
   const route = useRoute<RouteProp<RootStackParamList, "Canvas">>();
@@ -272,6 +274,14 @@ export function CanvasScreen({
   const disposedRef = useRef(false);
   // 卸载时落库要读的元数据
   const metadataRef = useRef<PageMetadata>(metadata);
+  // fix(P0): beforeRemove 已成功落库 → cleanup 不再重复保存
+  const hasSavedRef = useRef(false);
+  // 标记是否正在落库（beforeRemove 期间阻止重入）
+  const isSavingRef = useRef(false);
+  // 当前正在等待的 navigation action（save 成功后 dispatch）
+  const pendingNavActionRef = useRef<unknown>(null);
+  // 退出时跳过保存（用户选"放弃保存"）
+  const skipSaveRef = useRef(false);
 
   // canvas-editor（WebView 文字层）状态
   // editorEnabled: WebView 是否接收触控（true=文字模式，false=笔模式透传）
@@ -312,6 +322,56 @@ export function CanvasScreen({
     return () => { disposed = true; };
   }, [entryId, imagesFromData, loadedRichText]);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
+  // fix(P1): WebView 的 JS focus 在某些 Android 机型上不可靠，导致进入画布后键盘
+  // 不自动弹起。`keyboardAutoOpened` 跟踪自动 focus 是否成功唤起键盘；
+  // 若 N 毫秒后 keyboardVisible 仍为 false，弹"点这里开始打字"占位按钮让用户手动唤起。
+  const [keyboardAutoOpened, setKeyboardAutoOpened] = useState(false);
+  const [showKeyboardPrompt, setShowKeyboardPrompt] = useState(false);
+
+  // ── 进入画布时自动唤起键盘（fix P1） ──
+  // 流程：focus 屏幕 → 等 WebView ready → 调 editorRef.current?.focus() 唤起键盘
+  // 失败兜底：N 毫秒后若键盘还没起来，弹"点这里开始打字"占位
+  useFocusEffect(
+    useCallback(() => {
+      setKeyboardAutoOpened(false);
+      setShowKeyboardPrompt(false);
+      // WebView ready 是异步的（HTML 加载 + canvas-editor 实例构建）。
+      // 给个最大等待时间，超时就显示占位按钮
+      const FOCUS_RETRY_MS = 250;
+      const PROMPT_TIMEOUT_MS = 1500;
+      const startedAt = Date.now();
+
+      const tryFocus = () => {
+        if (keyboardAutoOpened) return;
+        if (editorReadyRef.current) {
+          try {
+            editorRef.current?.focus?.();
+            // 乐观标记；keyboardDidShow 事件没来就说明没成功 → 显示占位
+            setKeyboardAutoOpened(true);
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+        if (Date.now() - startedAt > PROMPT_TIMEOUT_MS) {
+          setShowKeyboardPrompt(true);
+          return;
+        }
+        setTimeout(tryFocus, FOCUS_RETRY_MS);
+      };
+      const t = setTimeout(tryFocus, FOCUS_RETRY_MS);
+      return () => {
+        clearTimeout(t);
+      };
+    }, [keyboardAutoOpened]),
+  );
+
+  // 键盘没自动起来时，监听 keyboardDidShow 关闭占位
+  useEffect(() => {
+    if (!keyboardVisible) return;
+    setShowKeyboardPrompt(false);
+    setKeyboardAutoOpened(true);
+  }, [keyboardVisible]);
 
   // ── 录音状态（由 CanvasEditor.onRecordingEvent 驱动） ──
   // - isRecording: WebView 端 MediaRecorder 是否正在录音
@@ -380,65 +440,166 @@ export function CanvasScreen({
   }, []);
 
   // ── 退出时落库（不自动保存，仅在卸载时） ──
-  // 设计：用户点返回箭头或 ⋮ 菜单离开本页面 → 触发卸载 → 同步构造 blocks 并 PUT
-  // 失败仅 console.warn，不阻塞路由返回
+  // 设计：用户点返回箭头或 ⋮ 菜单离开本页面 → 触发 beforeRemove → 拦截 → 异步
+  // 构造 blocks 并 PUT，成功后 dispatch 放行。失败弹 Alert 让用户选"重试"或"放弃"。
+  //
+  // 兜底：如果 beforeRemove 没机会触发（应用被强杀、栈重置等），cleanup 里再
+  // 尝试一次 last-ditch 保存（best-effort，仅 console.warn）。
+  //
   // fix(Bug-2): cleanup 闭包捕获的是 mount 时的 snapshot，会读到旧 state。
   // 改为通过 ref 读取最新值，并加 disposed 守卫。
+  // fix(P0): 提取出 buildBlocks + persistBlocks 给 beforeRemove 和 cleanup 复用。
+  const buildBlocks = useCallback((): Block[] => {
+    const rich = pendingEditorContentRef.current;
+    const textBlockContent = rich.length > 0 ? JSON.stringify(rich) : "";
+    const latestImages = imagesRef.current;
+    const latestStrokes = strokesRef.current;
+    const latestMetadata = metadataRef.current;
+    const blocks: Block[] = [];
+    if (latestImages.length > 0 || latestStrokes.length > 0) {
+      blocks.push({
+        type: "ink",
+        content: JSON.stringify({
+          strokes: latestStrokes,
+          images: latestImages.map((img) => ({
+            id: img.id,
+            source: img.source,
+            x: img.x,
+            y: img.y,
+            width: img.width,
+            height: img.height,
+            rotation: img.rotation,
+            zIndex: img.zIndex,
+          })),
+          metadata: latestMetadata,
+        }),
+      });
+    }
+    if (textBlockContent) {
+      blocks.push({ type: "text", content: textBlockContent });
+    }
+    return blocks;
+  }, []);
+
+  /**
+   * 落库当前 blocks。返回 Promise：成功 resolve；失败 reject 带 Error。
+   * 内部处理 entryId 不存在时的 createEntry 流程。
+   */
+  const persistBlocks = useCallback(async (): Promise<void> => {
+    const blocks = buildBlocks();
+    let targetId = entryIdRef.current;
+    if (!targetId && blocks.length > 0) {
+      // 后端 EntryCreateRequest 不再接受 `type` 字段，画布内容由 updateBlocks 写入。
+      const created = await api.createEntry({});
+      targetId = created.id;
+      entryIdRef.current = targetId;
+    }
+    if (targetId && blocks.length > 0) {
+      await api.updateBlocks(targetId, blocks);
+    }
+  }, [buildBlocks]);
+
   useEffect(() => {
     disposedRef.current = false;
     return () => {
       disposedRef.current = true;
-      const rich = pendingEditorContentRef.current;
-      const textBlockContent = rich.length > 0 ? JSON.stringify(rich) : "";
-      const latestEntryId = entryIdRef.current;
-      const latestImages = imagesRef.current;
-      const latestStrokes = strokesRef.current;
-      const latestMetadata = metadataRef.current;
-      // 只在有内容变更或已有 entryId 时落库
-      if (!textBlockContent && !latestEntryId) return;
-
-      // 构造 blocks：保留 ink + 拍照图；追加 text block
-      const blocks: Block[] = [];
-      if (latestImages.length > 0 || latestStrokes.length > 0) {
-        blocks.push({
-          type: "ink",
-          content: JSON.stringify({
-            strokes: latestStrokes,
-            images: latestImages.map((img) => ({
-              id: img.id,
-              source: img.source,
-              x: img.x,
-              y: img.y,
-              width: img.width,
-              height: img.height,
-              rotation: img.rotation,
-              zIndex: img.zIndex,
-            })),
-            metadata: latestMetadata,
-          }),
-        });
-      }
-      if (textBlockContent) {
-        blocks.push({ type: "text", content: textBlockContent });
-      }
-
-      const persist = async () => {
-        try {
-          let targetId = latestEntryId;
-          if (!targetId) {
-            const created = await api.createEntry({ type: "note" });
-            targetId = created.id;
-          }
-          if (targetId && blocks.length > 0) {
-            await api.updateBlocks(targetId, blocks);
-          }
-        } catch (e) {
-          console.warn("[CanvasScreen] 自动落库失败", e);
-        }
-      };
-      void persist();
+      // beforeRemove 已经成功保存过 → 不再重复
+      if (hasSavedRef.current || skipSaveRef.current) return;
+      // 没内容也没 entryId → 没必要保存
+      const blocks = buildBlocks();
+      if (blocks.length === 0 && !entryIdRef.current) return;
+      // best-effort 兜底保存（不阻塞返回）
+      void persistBlocks().catch((e: unknown) => {
+        console.warn("[CanvasScreen] 自动落库失败", e);
+      });
     };
-  }, []);
+  }, [buildBlocks, persistBlocks]);
+
+  // ── 离开页面拦截：在导航真正卸载前保存内容 ──
+  // 用户点返回箭头 / 调用 navigation.goBack() / 父栈 pop 时，会触发 beforeRemove。
+  // 这里 preventDefault → 异步 saveBlocks → 成功后再 dispatch(e.data.action) 放行。
+  useEffect(() => {
+    const unsubscribe = navigation.addListener("beforeRemove", (e) => {
+      // 已在 beforeRemove 触发的保存里 → 忽略（避免重入）
+      if (isSavingRef.current) return;
+      // 已经保存过了 / 用户选放弃 → 直接放行
+      if (hasSavedRef.current || skipSaveRef.current) {
+        return;
+      }
+
+      const blocks = buildBlocks();
+      // 没有内容 + 没有 entryId → 没必要拦截，直接放行
+      if (blocks.length === 0 && !entryIdRef.current) {
+        hasSavedRef.current = true;
+        return;
+      }
+
+      // 拦截默认行为，先保存
+      e.preventDefault();
+      isSavingRef.current = true;
+      pendingNavActionRef.current = e.data.action;
+
+      void persistBlocks()
+        .then(() => {
+          isSavingRef.current = false;
+          hasSavedRef.current = true;
+          const action = pendingNavActionRef.current as
+            | { type: string; payload?: object }
+            | undefined;
+          if (action) {
+            navigation.dispatch(action);
+          } else {
+            navigation.goBack();
+          }
+        })
+        .catch((err: unknown) => {
+          isSavingRef.current = false;
+          const msg = err instanceof Error ? err.message : "保存失败";
+          Alert.alert("保存失败", `${msg}，请选择如何继续`, [
+            {
+              text: "再试一次",
+              onPress: () => {
+                // 重新触发保存 + 放行：直接调 dispatch 同一 action
+                // （beforeRemove 会再次触发，这里走同一段逻辑）
+                const action = pendingNavActionRef.current as
+                  | { type: string; payload?: object }
+                  | undefined;
+                if (action) {
+                  navigation.dispatch(action);
+                } else {
+                  navigation.goBack();
+                }
+              },
+            },
+            {
+              text: "放弃保存",
+              style: "destructive",
+              onPress: () => {
+                skipSaveRef.current = true;
+                hasSavedRef.current = true;
+                const action = pendingNavActionRef.current as
+                  | { type: string; payload?: object }
+                  | undefined;
+                if (action) {
+                  navigation.dispatch(action);
+                } else {
+                  navigation.goBack();
+                }
+              },
+            },
+            {
+              text: "取消",
+              style: "cancel",
+              onPress: () => {
+                // 留在本页面，清掉 pending action
+                pendingNavActionRef.current = null;
+              },
+            },
+          ]);
+        });
+    });
+    return unsubscribe;
+  }, [navigation, buildBlocks, persistBlocks]);
 
   // ── 工具栏回调 ──
 
@@ -515,18 +676,36 @@ export function CanvasScreen({
   }, []);
 
   // ── 录音按钮：开始 / 停止 ──
+  // fix(P1): 之前没有显式校验 editorRef / WebView 是否就绪，用户点了录音按钮
+  // 偶尔会"无反应"（WebView 还没 ready / editor 还没暴露 startRecording）。
+  // 现在加一个 isReady 检查 + 兜底提示，让用户知道发生了什么。
   const handleToggleRecording = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) {
+      Alert.alert("录音不可用", "编辑器还没准备好，请稍后再试");
+      return;
+    }
     if (isRecording) {
+      if (typeof editor.stopRecording !== "function") {
+        Alert.alert("录音不可用", "当前 WebView 不支持录音功能");
+        return;
+      }
       try {
-        editorRef.current?.stopRecording?.();
+        editor.stopRecording();
       } catch (e) {
         console.warn("[CanvasScreen] stopRecording 失败", e);
+        Alert.alert("停止录音失败", e instanceof Error ? e.message : "未知错误");
       }
     } else {
+      if (typeof editor.startRecording !== "function") {
+        Alert.alert("录音不可用", "当前 WebView 不支持录音功能");
+        return;
+      }
       try {
-        editorRef.current?.startRecording?.();
+        editor.startRecording();
       } catch (e) {
         console.warn("[CanvasScreen] startRecording 失败", e);
+        Alert.alert("开始录音失败", e instanceof Error ? e.message : "未知错误");
       }
     }
   }, [isRecording]);
@@ -584,19 +763,24 @@ export function CanvasScreen({
    * - 若没有 entryId：先 createEntry，再 updateBlocks
    * 注：后端 updateBlocks 是 PUT 全量覆盖，所以这里需要先 GET 现有 blocks。
    * 简化方案：使用 ink 块已存在的逻辑（保留）；新加 audio 块追加到末尾。
+   *
+   * 修复：getBlocks 已经做了 `{blocks:[...]}` 解包，existing 直接是 Block[]。
+   * 之前的代码把 `{blocks:[...]}` 当作数组，append audioBlock 后会变成
+   * `[{blocks:[...]}, audioBlock]`，传给后端会被 BlocksPutRequest 拒绝。
    */
   const persistAudioBlock = useCallback(
     async (url: string, mime: string, duration: number) => {
       try {
         let targetId = entryId;
         if (!targetId) {
-          const created = await api.createEntry({ type: "note" });
+          const created = await api.createEntry({});
           targetId = created.id;
         }
         if (!targetId) return;
         // 拉取现有 blocks，追加 audio 块后整组 PUT
         let existing: Block[] = [];
         try {
+          // api.getBlocks 已解开 {blocks:[...]}，这里直接是 Block[]
           existing = await api.getBlocks(targetId);
         } catch {
           existing = [];
@@ -847,6 +1031,25 @@ export function CanvasScreen({
             <FormatToolbar onCommand={handleFormatCommand} />
           ) : null}
 
+          {/* fix(P1): 键盘没自动起来时的占位提示，用户点它手动唤起键盘 */}
+          {activeTool === null && showKeyboardPrompt && !keyboardVisible ? (
+            <Pressable
+              style={styles.keyboardPrompt}
+              onPress={() => {
+                try {
+                  editorRef.current?.focus?.();
+                } catch {
+                  /* ignore */
+                }
+                setShowKeyboardPrompt(false);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="点这里开始打字"
+            >
+              <Text style={styles.keyboardPromptText}>⌨️ 点这里开始打字</Text>
+            </Pressable>
+          ) : null}
+
           <DraftToggle isDraft={isDraft} onToggle={handleToggleDraft} />
 
           <ThreeDotMenu
@@ -976,6 +1179,29 @@ const styles = StyleSheet.create({
   },
   swatchRow: {
     flexDirection: "row",
+  },
+  keyboardPrompt: {
+    position: "absolute",
+    top: 12,
+    left: 0,
+    right: 0,
+    alignItems: "center",
+    zIndex: 30,
+  },
+  keyboardPromptText: {
+    backgroundColor: "rgba(25, 118, 210, 0.92)",
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "600",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    overflow: "hidden",
+    elevation: 4,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
   },
   swatch: {
     width: 32,

@@ -501,7 +501,13 @@ class ChatStore {
       });
 
       // 异步刷新一次列表
-      void this.fetchSessions().catch(() => undefined);
+      // 群聊：后端无 SSE，消息是异步 dispatch 出去的，所以 sendMessage 完结后
+      // 主动拉一次群消息历史。P0 — 长期应改用 WS 或后端群消息流。
+      if (this.state.currentGroupId) {
+        void this.refreshGroupMessages(this.state.currentGroupId).catch(() => undefined);
+      } else {
+        void this.fetchSessions().catch(() => undefined);
+      }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "发送失败，请重试";

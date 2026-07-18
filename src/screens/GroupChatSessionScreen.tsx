@@ -244,7 +244,7 @@ export function GroupChatSessionScreen() {
     const q = mentionQuery.trim().toLowerCase();
     if (!q) return currentGroupMembers;
     return currentGroupMembers.filter((m) =>
-      m.name.toLowerCase().includes(q),
+      (m.name ?? m.member_id).toLowerCase().includes(q),
     );
   }, [currentGroupMembers, mentionQuery]);
 
@@ -404,7 +404,7 @@ export function GroupChatSessionScreen() {
               <MemberPickerRow
                 key={m.member_id}
                 member={m}
-                onPick={() => insertMention(m.name)}
+                onPick={() => insertMention(m.name ?? m.member_id)}
               />
             ))}
             {filteredMembers.length === 0 && (

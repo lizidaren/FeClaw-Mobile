@@ -37,6 +37,7 @@ import {
   CHAT_EMPTY_PRIVATE,
   CHAT_EMPTY_PRIVATE_HINT,
   CHAT_GROUP_COUNT,
+  chatSessionDisplayTopic,
 } from "../constants/strings";
 
 type Nav = NativeStackNavigationProp<RootStackParamList, "Main">;
@@ -235,7 +236,9 @@ function UnifiedRowItem(props: {
   const { row, isLast, onOpenPrivate, onOpenGroup } = props;
   if (row.kind === "private") {
     const s = row.session;
-    const title = s.topic || CHAT_DEFAULT_TOPIC;
+    // fix(P0): 刚创建还没发消息的会话 topic 只有渠道前缀 [mobile]，
+    // 走 chatSessionDisplayTopic 剥前缀 + 占位
+    const title = chatSessionDisplayTopic(s.topic) || CHAT_DEFAULT_TOPIC;
     return (
       <Pressable
         style={[styles.row, isLast && styles.rowLast]}

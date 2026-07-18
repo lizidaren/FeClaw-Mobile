@@ -110,6 +110,24 @@ export const CHAT_NEW_A11Y = "新建聊天";
 export const CHAT_TAB_PRIVATE = "私聊";
 export const CHAT_TAB_GROUP = "群聊";
 export const CHAT_DEFAULT_TOPIC = "新对话";
+/** Mobile 一对一：刚创建 Agent 时 session 的 topic 还是空，显示这个占位文案 */
+export const CHAT_NEW_AGENT_PLACEHOLDER = "新创建的 AI 向导";
+
+/**
+ * 把后端返回的 topic 转成给用户看的展示标题。
+ * 后端会把渠道标记 `[mobile]` / `[web]` 放在 topic 字段开头，作为内部元数据；
+ * 前端展示时需要把这层前缀剥掉；剥完为空说明这是个"刚创建但还没发消息"的会话，
+ * 走 `CHAT_NEW_AGENT_PLACEHOLDER` 占位。
+ *
+ * 注意：保留这个工具函数作为唯一真理源，避免散落在各组件里 if/else 写错。
+ */
+export function chatSessionDisplayTopic(topic: string | null | undefined): string {
+  if (!topic) return CHAT_NEW_AGENT_PLACEHOLDER;
+  // 去掉 [xxx] 渠道前缀
+  const stripped = topic.replace(/^\[[^\]]*\]\s*/, "").trim();
+  if (!stripped) return CHAT_NEW_AGENT_PLACEHOLDER;
+  return stripped;
+}
 export const CHAT_MESSAGE_COUNT_SUFFIX = (n: number) => `${n} 条`;
 export const CHAT_REFRESH_HINT = "点此刷新";
 export const CHAT_REFRESHING = "刷新中…";

@@ -49,6 +49,7 @@ import type {
   GroupMember,
 } from "../types/api";
 import type { RootStackParamList } from "../navigation/AppNavigator";
+import { chatSessionDisplayTopic } from "../constants/strings";
 
 // 文档选择器（用户安装；未装时动态降级为只提示）
 type DocPickerResult = {
@@ -384,8 +385,11 @@ export function ChatSessionScreen() {
   }, []);
 
   const headerTitle = useMemo(() => {
-    if (currentTopic) return currentTopic;
-    if (currentSessionId) return "对话";
+    // fix(P0): 刚创建的 Session 后端 topic 只有渠道前缀 [mobile]，
+    // 走 chatSessionDisplayTopic 剥前缀，空则显示"新创建的 AI 向导"占位
+    const fromTopic = chatSessionDisplayTopic(currentTopic);
+    if (currentTopic) return fromTopic;
+    if (currentSessionId) return fromTopic;
     return "新对话";
   }, [currentTopic, currentSessionId]);
 
