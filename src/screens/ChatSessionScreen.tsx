@@ -47,6 +47,7 @@ import type {
   ChatImageAttachment,
   ChatMessage,
   GroupMember,
+  ToolCall,
 } from "../types/api";
 import type { RootStackParamList } from "../navigation/AppNavigator";
 import { chatSessionDisplayTopic } from "../constants/strings";
@@ -80,7 +81,8 @@ type Nav = NativeStackNavigationProp<RootStackParamList, "ChatSession">;
 type RouteT = RouteProp<RootStackParamList, "ChatSession">;
 
 // ── 轻量 Markdown 渲染 ───────────────────────────────────────
-// 不引第三方库：识别 **bold** / `inline code` / ```code block``` / 换行 / ![alt](url) 图片。
+// 不引第三方库：识别 **bold** / `inline code` / ```code block``` / 换行 / ![alt](url) 图片
+// / 无序列表（- item → • 前缀）。
 
 interface MdSegment {
   text: string;
@@ -88,39 +90,74 @@ interface MdSegment {
   code?: boolean;
   block?: boolean;
   image?: ChatImageAttachment;
+  /** 列表项：渲染为 • 前缀 + 缩进 */
+  listItem?: boolean;
+  /** 段间换行（双换行 → 段间留白） */
+  paragraphBreak?: boolean;
 }
 
 function renderMarkdown(src: string): MdSegment[] {
   if (!src) return [];
   const segments: MdSegment[] = [];
-  const lines = src.split("\n");
+  // 先按双换行拆段，每段再按行处理；段间用 paragraphBreak 标记留白
+  const paragraphs = src.split(/\n{2,}/);
 
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    if (line.trim().startsWith("```")) {
-      const buf: string[] = [];
-      i += 1;
-      while (i < lines.length && !lines[i].trim().startsWith("```")) {
-        buf.push(lines[i]);
+  for (let p = 0; p < paragraphs.length; p++) {
+    const para = paragraphs[p];
+    const lines = para.split("\n");
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (line.trim().startsWith("```")) {
+        const buf: string[] = [];
         i += 1;
+        while (i < lines.length && !lines[i].trim().startsWith("```")) {
+          buf.push(lines[i]);
+          i += 1;
+        }
+        if (i < lines.length) i += 1;
+        const code = buf.join("\n");
+        if (code) {
+          segments.push({ text: code, block: true });
+        }
+        continue;
       }
-      if (i < lines.length) i += 1;
-      const code = buf.join("\n");
-      if (code) {
-        segments.push({ text: code, block: true });
-      }
-      continue;
-    }
 
-    const inlineSegs = parseInline(line);
-    for (const seg of inlineSegs) {
-      segments.push(seg);
+      // 无序列表：- item / * item / + item
+      if (/^\s*[-*+]\s+/.test(line)) {
+        const match = line.match(/^(\s*)[-*+]\s+(.*)$/);
+        if (match) {
+          const text = match[2];
+          const inlineSegs = parseInline(text);
+          if (inlineSegs.length > 0) {
+            inlineSegs[0] = { ...inlineSegs[0], listItem: true };
+          } else {
+            inlineSegs.push({ text: "", listItem: true });
+          }
+          for (const seg of inlineSegs) {
+            segments.push(seg);
+          }
+          if (i < lines.length - 1) {
+            segments.push({ text: "\n" });
+          }
+          i += 1;
+          continue;
+        }
+      }
+
+      const inlineSegs = parseInline(line);
+      for (const seg of inlineSegs) {
+        segments.push(seg);
+      }
+      if (i < lines.length - 1) {
+        segments.push({ text: "\n" });
+      }
+      i += 1;
     }
-    if (i < lines.length - 1) {
-      segments.push({ text: "\n" });
+    // 段间插入空行（最后一段不插）
+    if (p < paragraphs.length - 1) {
+      segments.push({ text: "\n", paragraphBreak: true });
     }
-    i += 1;
   }
 
   return segments;
@@ -772,6 +809,8 @@ function MessageBubble({
 }) {
   const isUser = msg.role === "user";
   const segments = useMemo(() => renderMarkdown(msg.content), [msg.content]);
+  const hasToolCalls =
+    !isUser && !!msg.tool_calls && msg.tool_calls.length > 0;
 
   return (
     <View>
@@ -812,15 +851,26 @@ function MessageBubble({
             </View>
           )}
 
+          {/* 工具调用块（assistant 专用，浅灰背景 + 等宽字体 + 折叠/展开） */}
+          {hasToolCalls && (
+            <View style={styles.toolCallStack}>
+              {msg.tool_calls!.map((tc, idx) => (
+                <ToolCallBlock key={`tc-${idx}-${tc.id ?? "noid"}`} tc={tc} />
+              ))}
+            </View>
+          )}
+
           {segments.length === 0 ? (
-            <Text
-              style={[
-                styles.bubbleText,
-                isUser ? styles.bubbleTextUser : styles.bubbleTextAssistant,
-              ]}
-            >
-              {" "}
-            </Text>
+            hasToolCalls ? null : (
+              <Text
+                style={[
+                  styles.bubbleText,
+                  isUser ? styles.bubbleTextUser : styles.bubbleTextAssistant,
+                ]}
+              >
+                {" "}
+              </Text>
+            )
           ) : (
             <Text
               style={[
@@ -846,6 +896,22 @@ function MessageBubble({
                   seg.code && !seg.block && styles.mdCodeInline,
                   seg.block && styles.mdCodeBlock,
                 ];
+                if (seg.listItem) {
+                  return (
+                    <Text key={idx} style={[segStyle, styles.mdListItem]}>
+                      <Text style={styles.mdListItemPrefix}>{"  • "}</Text>
+                      {seg.text}
+                    </Text>
+                  );
+                }
+                if (seg.paragraphBreak) {
+                  // 段间留白：插入一个换行；视觉上由 padding/margin 承担
+                  return (
+                    <Text key={idx} style={styles.mdParagraphBreak}>
+                      {" "}
+                    </Text>
+                  );
+                }
                 return (
                   <Text key={idx} style={segStyle}>
                     {seg.text}
@@ -857,6 +923,66 @@ function MessageBubble({
         </View>
       </View>
     </View>
+  );
+}
+
+/** 工具调用块：浅灰背景 + 等宽字体，可点击展开/收起 args 与 result。 */
+function ToolCallBlock({ tc }: { tc: ToolCall }) {
+  const [open, setOpen] = useState(false);
+  const argsText = useMemo(() => {
+    if (!tc.args) return "";
+    if (typeof tc.args === "string") {
+      // 尝试把 JSON 字符串美化一行
+      try {
+        const parsed = JSON.parse(tc.args);
+        return JSON.stringify(parsed, null, 2);
+      } catch {
+        return tc.args;
+      }
+    }
+    return JSON.stringify(tc.args, null, 2);
+  }, [tc.args]);
+  const headerLabel = useMemo(() => {
+    if (tc.name) return `🔧 ${tc.name}`;
+    return "🔧 tool";
+  }, [tc.name]);
+  return (
+    <Pressable
+      onPress={() => setOpen((v) => !v)}
+      style={({ pressed }) => [
+        styles.toolCallBlock,
+        pressed && styles.toolCallBlockPressed,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={`${headerLabel} ${open ? "收起" : "展开"}`}
+    >
+      <View style={styles.toolCallHeader}>
+        <Text style={styles.toolCallHeaderText} numberOfLines={1}>
+          {headerLabel}
+        </Text>
+        <Text style={styles.toolCallChevron}>{open ? "▾" : "▸"}</Text>
+      </View>
+      {open && (
+        <View style={styles.toolCallBody}>
+          {!!argsText && (
+            <View style={styles.toolCallSection}>
+              <Text style={styles.toolCallLabel}>args</Text>
+              <Text style={styles.toolCallMono} selectable>
+                {argsText}
+              </Text>
+            </View>
+          )}
+          {typeof tc.result === "string" && tc.result.length > 0 && (
+            <View style={styles.toolCallSection}>
+              <Text style={styles.toolCallLabel}>result</Text>
+              <Text style={styles.toolCallMono} selectable>
+                {tc.result}
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
+    </Pressable>
   );
 }
 
@@ -902,6 +1028,21 @@ function StreamingBubble({ content }: { content: string }) {
                 seg.code && !seg.block && styles.mdCodeInline,
                 seg.block && styles.mdCodeBlock,
               ];
+              if (seg.listItem) {
+                return (
+                  <Text key={idx} style={[segStyle, styles.mdListItem]}>
+                    <Text style={styles.mdListItemPrefix}>{"  • "}</Text>
+                    {seg.text}
+                  </Text>
+                );
+              }
+              if (seg.paragraphBreak) {
+                return (
+                  <Text key={idx} style={styles.mdParagraphBreak}>
+                    {" "}
+                  </Text>
+                );
+              }
               return (
                 <Text key={idx} style={segStyle}>
                   {seg.text}
@@ -1156,6 +1297,66 @@ const styles = StyleSheet.create({
   mdImageLink: {
     color: "#1976d2",
     textDecorationLine: "underline",
+  },
+  mdListItem: {
+    // 在 text 前面渲染时由 prefix 决定；这里只负责字体一致性
+  },
+  mdListItemPrefix: {
+    fontWeight: "600",
+    color: "#1976d2",
+  },
+  mdParagraphBreak: {
+    // 段间空行（双换行）— 用一个不可见换行段撑出视觉留白
+    height: 6,
+  },
+  toolCallStack: {
+    marginBottom: 6,
+  },
+  toolCallBlock: {
+    backgroundColor: "#F0F0F0",
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    marginBottom: 4,
+  },
+  toolCallBlockPressed: {
+    backgroundColor: "#E8E8E8",
+  },
+  toolCallHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  toolCallHeaderText: {
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+    fontSize: 12,
+    color: "#555",
+    flex: 1,
+  },
+  toolCallChevron: {
+    fontSize: 12,
+    color: "#888",
+    marginLeft: 6,
+  },
+  toolCallBody: {
+    marginTop: 6,
+  },
+  toolCallSection: {
+    marginTop: 4,
+  },
+  toolCallLabel: {
+    fontSize: 10,
+    color: "#888",
+    marginBottom: 2,
+    fontWeight: "600",
+  },
+  toolCallMono: {
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+    fontSize: 12,
+    color: "#333",
+    backgroundColor: "#FFFFFF",
+    padding: 6,
+    borderRadius: 4,
   },
   cursor: {
     color: "#999",

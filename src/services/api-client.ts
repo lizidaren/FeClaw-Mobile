@@ -8,6 +8,23 @@
  * - 错误抛出 ApiError（含 status + body）
  */
 
+// React Native runtime 在 Hermes / JSC 上都提供 TextDecoder，但
+// @react-native/typescript-config 的 lib 不包含 dom 类型 — 在这里
+// 显式声明一下，避免 TS2304。
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  class TextDecoder {
+    constructor(
+      label?: string,
+      options?: { fatal?: boolean; ignoreBOM?: boolean; stream?: boolean },
+    );
+    decode(
+      input?: ArrayBufferView | ArrayBuffer | null,
+      options?: { stream?: boolean },
+    ): string;
+  }
+}
+
 import { API_CONFIG } from "./config";
 import type {
   AgentInfo,
@@ -501,27 +518,33 @@ export class ApiClient {
       started = true;
 
       const xhr = new XMLHttpRequest();
+      // fix(Bug-1): 用 arraybuffer + TextDecoder(stream:true) 解码，
+      // 避免 xhr.responseText 把半截的 UTF-8 多字节字符（中文 3 字节等）解码成乱码。
+      // 老的 responseText 路径在 TCP 半包时会把 "你" 的前 2 字节直接渲染成
+      // 替换字符，触发流式"丢字/跳字"。
       xhr.open("POST", url, true);
+      xhr.responseType = "arraybuffer";
       xhr.setRequestHeader("Accept", "text/event-stream");
       xhr.setRequestHeader("Content-Type", "application/json");
       if (this.token) {
         xhr.setRequestHeader("Authorization", `Bearer ${this.token}`);
       }
 
-      // 记录上次处理到的位置，处理按 \n\n 切分
-      let processedLen = 0;
+      // 用 stream decoder 累积分片解码；保留按 \n\n 分帧的旧逻辑。
+      // 关键：xhr.response 在 arraybuffer 模式下指向当前累计的完整 body，
+      // 我们用 processedBytes 记录上次已解码的字节偏移，onprogress 时只
+      // 解码 "新到的字节" 部分 — decoder 会跨调用保持多字节字符的不完整
+      // 字节，直到后续 chunk 补全后才输出。
+      const decoder = new TextDecoder("utf-8", { stream: true });
+      let processedBytes = 0;
       let buffer = "";
+      // 降级标记：若老平台不支持 responseType=arraybuffer，
+      // xhr.response 会是 ""，此时退回 responseText 路径。
+      let useArrayBuffer = true;
 
-      xhr.onprogress = () => {
-        const fullText = xhr.responseText ?? "";
-        if (fullText.length < processedLen) {
-          // 理论上不会发生，防御性 reset
-          processedLen = 0;
-          buffer = "";
-        }
-        const newPart = fullText.slice(processedLen);
-        processedLen = fullText.length;
-        buffer += newPart;
+      const handleChunk = (text: string) => {
+        if (!text) return;
+        buffer += text;
         const events = parseChunk(buffer);
         // 把末尾未以 \n\n 结尾的部分保留在 buffer
         const lastSep = buffer.lastIndexOf("\n\n");
@@ -533,6 +556,32 @@ export class ApiClient {
         }
       };
 
+      xhr.onprogress = () => {
+        const buf = xhr.response;
+        if (!useArrayBuffer || !(buf instanceof ArrayBuffer)) {
+          // 降级到老 responseText 路径（仅一次）
+          useArrayBuffer = false;
+          const fullText = xhr.responseText ?? "";
+          if (fullText.length <= processedBytes) return;
+          const newPart = fullText.slice(processedBytes);
+          processedBytes = fullText.length;
+          handleChunk(newPart);
+          return;
+        }
+        const total = buf.byteLength;
+        if (total < processedBytes) {
+          // 防御：理论不会发生
+          processedBytes = 0;
+        }
+        if (total === processedBytes) return;
+        // 只 decode 新到的字节区间（stream:true 模式下 decoder 会保留
+        // 未完整的多字节字符，等下一次 decode 补全）。
+        const slice = new Uint8Array(buf, processedBytes, total - processedBytes);
+        processedBytes = total;
+        const text = decoder.decode(slice, { stream: true });
+        handleChunk(text);
+      };
+
       xhr.onload = () => {
         // 优先检查 HTTP 状态码：非 2xx 直接 fail，不要把 error body 当 SSE 解析发出。
         if (xhr.status === 401) {
@@ -542,11 +591,23 @@ export class ApiClient {
           return;
         }
         if (xhr.status < 200 || xhr.status >= 300) {
+          // 错误响应：完整 decode 一次（不需要 stream）
+          const buf = xhr.response;
+          let errText = "";
+          if (buf instanceof ArrayBuffer) {
+            try {
+              errText = new TextDecoder("utf-8").decode(buf);
+            } catch {
+              errText = "";
+            }
+          } else {
+            errText = xhr.responseText || "";
+          }
           fail(
             new ApiError(
               xhr.status,
-              xhr.responseText || `HTTP ${xhr.status}`,
-              xhr.responseText || null,
+              errText || `HTTP ${xhr.status}`,
+              errText || null,
             ),
           );
           return;
@@ -555,16 +616,16 @@ export class ApiClient {
         // 状态码 OK（2xx）才 flush 残余 + 推送 done
         // fix(Bug-3): 不要重复 parseChunk(buffer)；只解析剩余的 rest 拼到 buffer 后推一次。
         // notify() 内部的 seenSignatures 已为 [DONE] 等哨兵去重作为兜底。
-        const rest = (xhr.responseText ?? "").slice(processedLen);
-        if (rest) {
-          buffer += rest;
-          const events = parseChunk(buffer);
-          // 把未以 \n\n 结尾的部分保留在 buffer（与 onprogress 保持一致）
-          const lastSep = buffer.lastIndexOf("\n\n");
-          if (lastSep >= 0) {
-            buffer = buffer.slice(lastSep + 2);
+        if (useArrayBuffer) {
+          // 收尾：end-of-stream flush，让 decoder 释放残余不完整多字节
+          const tail = decoder.decode();
+          if (tail) handleChunk(tail);
+        } else {
+          // 降级路径：把已读到的完整 text 中未处理的部分 flush 出来
+          const fullText = xhr.responseText ?? "";
+          if (fullText.length > processedBytes) {
+            handleChunk(fullText.slice(processedBytes));
           }
-          for (const ev of events) notify(ev);
         }
         notify({ type: "done" });
         finish();

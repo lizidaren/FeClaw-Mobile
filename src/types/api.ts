@@ -198,6 +198,20 @@ export interface ChatFileAttachment {
   mime?: string;
 }
 
+/** 单次工具调用（assistant 调用 LLM tool） */
+export interface ToolCall {
+  /** 工具名（OpenAI 风格: tool_calls[].function.name） */
+  name: string;
+  /** 工具参数（JSON 字符串或对象） */
+  args?: string | Record<string, unknown>;
+  /** 工具返回结果（assistant 渲染时可能已合并） */
+  result?: string;
+  /** 工具调用 id（用于关联 tool 消息，可选） */
+  id?: string;
+  /** 状态：默认 "done"，失败时 "error" */
+  status?: "pending" | "done" | "error";
+}
+
 /** 会话内的一条消息 */
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -211,6 +225,12 @@ export interface ChatMessage {
   images?: ChatImageAttachment[];
   /** 附带文件 */
   files?: ChatFileAttachment[];
+  /**
+   * 工具调用列表（assistant 消息专用）。
+   * 后端历史可能把 tool_calls 嵌在 assistant 消息里：role=assistant + tool_calls=[{name, args, result, ...}]
+   * 退出再进会话时若不保留这个字段，工具调用会"消失"。
+   */
+  tool_calls?: ToolCall[];
 }
 
 /** 会话详情（列表 + 消息） */
@@ -245,7 +265,7 @@ export interface ChatStreamRequest {
 
 /** SSE 流式事件（兼容多种后端实现） */
 export interface ChatStreamEvent {
-  /** 事件类型，如 "message" / "delta" / "done" / "error" */
+  /** 事件类型，如 "message" / "delta" / "done" / "error" / "tool_call" / "tool_result" */
   type?: string;
   /** 文本增量（流式 chunk） */
   content?: string;
@@ -261,6 +281,14 @@ export interface ChatStreamEvent {
   data?: string;
   /** 兼容字段：会话主题 */
   topic?: string;
+  /** 工具名（type=tool_call / tool_result 时） */
+  tool_name?: string;
+  /** 工具参数（type=tool_call） */
+  tool_args?: string | Record<string, unknown>;
+  /** 工具调用 id（type=tool_call / tool_result） */
+  tool_call_id?: string;
+  /** 工具返回（type=tool_result） */
+  tool_result?: string;
 }
 
 /** ── Group ──────────────────────────────────────────── */

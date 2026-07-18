@@ -26,6 +26,7 @@ import type {
   GroupInfo,
   GroupMember,
   GroupMessage,
+  ToolCall,
 } from "../types/api";
 
 /** 用户在输入框里挂起的待发送图片（还没上传） */
@@ -372,33 +373,48 @@ class ChatStore {
     }
 
     // 1) 上传所有 pending 图片（串行，避免一次性触发多个大请求）
+    // fix(Bug-3): 三级兜底 —— 远端 URL → data URL → 本地 URI。
+    // 最后一级确保 user 消息的 images 字段非空，UI 缩略图始终能显示。
     const uploadedImages: ChatImageAttachment[] = [];
     for (const img of this.state.pendingImages) {
+      const mime = img.mime ?? "image/jpeg";
+      let resolvedUrl: string | null = null;
       try {
         const res = await api.uploadFile(
           img.uri,
           img.fileName ?? `image-${Date.now()}.jpg`,
-          img.mime ?? "image/jpeg",
+          mime,
         );
-        uploadedImages.push({ url: res.url, mime: res.mime });
-      } catch (err) {
-        // 单张上传失败：把 data URL 兜底（base64），让后端至少能看到图
-        // （实际项目里这里可改成更精细的 UI 提示）
+        if (res?.url) {
+          resolvedUrl = res.url;
+        }
+      } catch {
+        // 上传失败：继续走 data URL 兜底
+      }
+      if (!resolvedUrl) {
         const fallback = await tryReadAsDataUrl(img.uri).catch(() => null);
         if (fallback) {
-          uploadedImages.push({ url: fallback, mime: img.mime ?? "image/jpeg" });
+          resolvedUrl = fallback;
         }
       }
+      // 最后兜底：直接用本地 URI（Image 组件能渲染 file://）
+      if (!resolvedUrl) {
+        resolvedUrl = img.uri;
+      }
+      uploadedImages.push({ url: resolvedUrl, mime });
     }
 
     // 2) 上传所有 pending 文件
+    // fix(Bug-3): 失败兜底用本地 URI；保证 user 消息的 files 字段至少能显示文件名。
     const uploadedFiles: ChatFileAttachment[] = [];
     for (const f of this.state.pendingFiles) {
+      const mime = f.mime ?? "application/octet-stream";
       try {
-        const res = await api.uploadFile(f.uri, f.name, f.mime ?? "application/octet-stream");
-        uploadedFiles.push({ path: res.url, name: f.name, size: res.size, mime: res.mime });
+        const res = await api.uploadFile(f.uri, f.name, mime);
+        uploadedFiles.push({ path: res.url, name: f.name, size: res.size, mime: res.mime ?? mime });
       } catch {
-        // 文件失败跳过，content 仍然能发
+        // 上传失败：保留本地 URI 兜底，让 file card 仍能渲染与本地预览
+        uploadedFiles.push({ path: f.uri, name: f.name, size: f.size, mime });
       }
     }
 
@@ -452,6 +468,11 @@ class ChatStore {
       // fix(Bug-3): 即使底层 SSE 消费者已加去重，消费侧再守一道：
       // 多次收到 done 事件只 break 一次。
       let doneReceived = false;
+      // fix(Bug-2): 流式过程中收集工具调用，结束固化到 assistant 消息上。
+      // 否则退出再进会话后工具调用记录会"消失"。
+      const toolCalls: ToolCall[] = [];
+      // 用 tool_call_id 关联 tool_result；老后端可能用 index 顺序合并。
+      const pendingToolIds = new Set<string>();
 
       for await (const event of stream as AsyncIterable<ChatStreamEvent>) {
         if (abort.signal.aborted) break;
@@ -468,6 +489,46 @@ class ChatStore {
         if (ev.type === "error" || typeof ev.error === "string") {
           const errMsg = ev.error ?? "流式响应出错";
           throw new Error(errMsg);
+        }
+        // fix(Bug-2): 工具调用事件 —— 单独收集，不并入 content。
+        if (ev.type === "tool_call") {
+          const id = ev.tool_call_id;
+          if (id) pendingToolIds.add(id);
+          toolCalls.push({
+            id,
+            name: ev.tool_name ?? "tool",
+            args: ev.tool_args,
+            status: "done",
+          });
+          continue;
+        }
+        if (ev.type === "tool_result") {
+          const id = ev.tool_call_id;
+          if (id) {
+            // 找匹配 id 的 tool_call 把 result 写上去
+            const target = toolCalls.find((t) => t.id === id);
+            if (target) {
+              target.result = ev.tool_result;
+              target.status = "done";
+            } else {
+              // 没有前置 tool_call —— 直接 append 一条
+              toolCalls.push({
+                id,
+                name: ev.tool_name ?? "tool",
+                result: ev.tool_result,
+                status: "done",
+              });
+            }
+            pendingToolIds.delete(id);
+          } else {
+            // 没有 id：追加到末尾（兜底）
+            toolCalls.push({
+              name: ev.tool_name ?? "tool",
+              result: ev.tool_result,
+              status: "done",
+            });
+          }
+          continue;
         }
         if (ev.type === "done") {
           if (doneReceived) continue;
@@ -489,6 +550,7 @@ class ChatStore {
         role: "assistant",
         content: assistantContent,
         timestamp: new Date().toISOString(),
+        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       };
       const finalMessages = [...this.state.messages, assistantMsg];
 
@@ -527,7 +589,7 @@ class ChatStore {
     this.update({
       currentSessionId: detail.session_id,
       currentTopic: detail.topic ?? null,
-      messages: detail.messages ?? [],
+      messages: (detail.messages ?? []).map(normalizeChatMessage),
       streaming: false,
       streamingContent: "",
       currentSessionType: detail.type ?? "private",
@@ -586,4 +648,122 @@ async function tryReadAsDataUrl(uri: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * 规整化后端历史消息，把不同后端实现里的 tool_calls 表达统一成
+ * 前端 `ChatMessage.tool_calls: ToolCall[]` 格式。
+ *
+ * 后端可能把工具调用藏在：
+ *   1. OpenAI 风格 `{role:"assistant", tool_calls:[{id, function:{name, arguments}, ...}]}`
+ *   2. 扁平风格 `{role:"assistant", tool_calls:[{name, args, result}]}`
+ *   3. tool 角色 `{role:"tool", tool_call_id, content}`（结果）
+ *   4. 文本嵌入（content 含 "[Tool Call: name]" 等标记）
+ *
+ * 全部归一化成 `{role:"assistant", content, tool_calls:[{name, args, result, id, status}]}`。
+ */
+function normalizeChatMessage(raw: ChatMessage): ChatMessage {
+  if (!raw) return raw;
+
+  // 1) 已有标准 tool_calls 数组：原样透传
+  if (Array.isArray(raw.tool_calls) && raw.tool_calls.length > 0) {
+    return raw;
+  }
+
+  // 2) 后端用 `role: "tool"` 单独发结果 —— 这里只能丢（没有匹配 call）；
+  //    但若后端在 assistant 消息的 content 里 JSON 化了 tool_calls，也兜底解一下。
+  // 3) 文本嵌入：content 是 JSON 字符串
+  const content = typeof raw.content === "string" ? raw.content : "";
+  // 匹配 ```json ... ``` 包裹的 tool_calls 块（部分后端用 markdown 代码块塞）
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (fenced) {
+    const inner = fenced[1].trim();
+    if (inner.startsWith("{") || inner.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(inner) as unknown;
+        const extracted = extractToolCallsFromUnknown(parsed);
+        if (extracted.length > 0) {
+          // 替换 fenced 块为占位（保留其余正文）
+          const stripped = content.replace(fenced[0], "").trim();
+          return {
+            ...raw,
+            content: stripped,
+            tool_calls: extracted,
+          };
+        }
+      } catch {
+        // 不是 JSON：忽略
+      }
+    }
+  }
+  // 4) 文本嵌入：content 直接是 JSON
+  if (content.startsWith("{") || content.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(content) as unknown;
+      const extracted = extractToolCallsFromUnknown(parsed);
+      if (extracted.length > 0) {
+        return { ...raw, content: "", tool_calls: extracted };
+      }
+    } catch {
+      // 不是 JSON：忽略
+    }
+  }
+
+  return raw;
+}
+
+function extractToolCallsFromUnknown(v: unknown): ToolCall[] {
+  if (!v || typeof v !== "object") return [];
+  const out: ToolCall[] = [];
+  const obj = v as Record<string, unknown>;
+
+  // 形状 A：{ tool_calls: [...] }
+  if (Array.isArray(obj.tool_calls)) {
+    for (const tc of obj.tool_calls) {
+      if (tc && typeof tc === "object") {
+        const t = tc as Record<string, unknown>;
+        const fn = t.function as Record<string, unknown> | undefined;
+        const name =
+          (fn?.name as string | undefined) ?? (t.name as string | undefined) ?? "tool";
+        let args: string | undefined =
+          (t.args as string | undefined) ??
+          (fn?.arguments as string | undefined);
+        if (args && typeof args !== "string") args = JSON.stringify(args);
+        out.push({
+          id: (t.id as string | undefined) ?? (t.tool_call_id as string | undefined),
+          name,
+          args,
+          result: (t.result as string | undefined),
+          status: (t.status as ToolCall["status"]) ?? "done",
+        });
+      }
+    }
+    return out;
+  }
+
+  // 形状 B：[{ name, args, result, id }, ...]
+  if (Array.isArray(v)) {
+    for (const tc of v) {
+      if (tc && typeof tc === "object") {
+        const t = tc as Record<string, unknown>;
+        const fn = t.function as Record<string, unknown> | undefined;
+        const name =
+          (fn?.name as string | undefined) ?? (t.name as string | undefined) ?? "tool";
+        let args: string | undefined =
+          (t.args as string | undefined) ??
+          (fn?.arguments as string | undefined);
+        if (args && typeof args !== "string") args = JSON.stringify(args);
+        out.push({
+          id: (t.id as string | undefined) ?? (t.tool_call_id as string | undefined),
+          name,
+          args,
+          result: (t.result as string | undefined),
+          status: (t.status as ToolCall["status"]) ?? "done",
+        });
+      }
+    }
+    return out;
+  }
+
+  return out;
 }
