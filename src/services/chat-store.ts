@@ -14,6 +14,7 @@
 
 import { useSyncExternalStore } from "react";
 import { api } from "./api-client";
+import { API_CONFIG } from "./config";
 import type {
   AgentInfo,
   ChatFileAttachment,
@@ -58,6 +59,13 @@ interface ChatState {
   /** 当前 Agent id（私聊场景可切换） */
   currentAgentId: string | null;
   currentAgentName: string | null;
+  /**
+   * 当前会话所属 Agent 的模式。null 表示「未知/未加载」：
+   * - fetchSession 后会调 fetchAgentMode 把这个字段填上
+   * - UI 据此决定是否连 WebSocket（仅 im 模式连）
+   * - 切换会话 / 新建 / 删除 / reset 时会回到 null
+   */
+  agentMode: "classic" | "im" | null;
   messages: ChatMessage[];
   streaming: boolean;
   streamingContent: string;
@@ -84,6 +92,7 @@ const INITIAL_STATE: ChatState = {
   currentGroupName: null,
   currentAgentId: null,
   currentAgentName: null,
+  agentMode: null,
   messages: [],
   streaming: false,
   streamingContent: "",
@@ -114,6 +123,15 @@ class ChatStore {
    * 在 await 期间记录新值，回调时若不匹配则丢弃。
    */
   private lastFetchSessionRequestId: string | null = null;
+  /**
+   * Gen 2 IM Agent WebSocket 连接 —— 用于接收后端推送的 draft/confirm 事件。
+   * 进入会话时 connectWebSocket(sessionId)，离开时 disconnectWebSocket()。
+   * 旧连接关闭时不自动重连（避免与 fetchSession 抢 stream_session_id）；
+   * 由调用方在会话切换 / 重新聚焦时显式重连。
+   */
+  private ws: WebSocket | null = null;
+  private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private wsSessionId: string | null = null;
 
   // ── 读取 ──────────────────────────────────────────────────
 
@@ -143,11 +161,41 @@ class ChatStore {
       const detail = await api.getChatSession(sessionId);
       if (this.lastFetchSessionRequestId !== requestId) return;
       this.applyDetail(detail);
+      // Gen 2 IM Agent 接入：从 session 的 agent_id 拉一次详情，拿到 agent_mode。
+      // 这条调用 fire-and-forget —— 失败不影响 SSE 主路径，agentMode 保持 null
+      // （按 classic 处理）。
+      if (detail.agent_id) {
+        void this.fetchAgentMode(detail.agent_id);
+      }
       this.update({ loading: false });
     } catch (err) {
       if (this.lastFetchSessionRequestId !== requestId) return;
       const message = err instanceof Error ? err.message : "获取会话详情失败";
       this.update({ error: message, loading: false });
+    }
+  }
+
+  /**
+   * 拉取指定 Agent 的详情，并把 agent_mode 写回 state。
+   *
+   * - 调用方：fetchSession（拿到 session 后用 session.agent_id 调本方法）
+   * - 失败/缺失 agent_mode：保持现状（null / 已加载值），UI 按 classic 处理
+   * - 竞态保护：回调时若 currentAgentId 已不是传入的 agentHash（用户切走了），丢弃结果
+   *
+   * Classic Agent 不返回 agent_mode → agentMode 保持 null → UI 走纯 SSE 路径，
+   * 不连 WebSocket。IM Agent 返回 "im" → UI 连 WS 收 draft/confirm。
+   */
+  async fetchAgentMode(agentHash: string): Promise<void> {
+    if (!agentHash) return;
+    try {
+      const info = await api.getAgent(agentHash);
+      // 切会话保护：避免旧请求覆盖新会话的 agent mode
+      if (this.state.currentAgentId !== agentHash) return;
+      if (info.agent_mode) {
+        this.update({ agentMode: info.agent_mode });
+      }
+    } catch {
+      // 拉取失败时静默忽略：保持 agentMode 现状；Classic 路径不受影响
     }
   }
 
@@ -179,6 +227,8 @@ class ChatStore {
               currentGroupId: null,
               currentGroupName: null,
               currentSessionType: "private" as const,
+              // 同步清 agentMode：当前会话没了，旧 mode 不应继续驱动 WS
+              agentMode: null,
             }
           : {}),
       });
@@ -211,6 +261,8 @@ class ChatStore {
       currentSessionType: "private",
       currentGroupId: null,
       currentGroupName: null,
+      // 重置 agentMode：旧 Agent 的 mode 不应被新会话复用
+      agentMode: null,
       pendingImages: [],
       pendingFiles: [],
     });
@@ -238,6 +290,8 @@ class ChatStore {
       streaming: false,
       streamingContent: "",
       error: null,
+      // 群聊不走单 Agent 的 WS draft/confirm：重置 agentMode 避免误连
+      agentMode: null,
       pendingImages: [],
       pendingFiles: [],
     });
@@ -296,6 +350,8 @@ class ChatStore {
       }
       this.currentAbort = null;
     }
+    // 断开 WS —— 切账号后旧连接的 session_id 已经没有意义
+    this.disconnectWebSocket();
     this.state = { ...INITIAL_STATE };
     this.emit();
   }
@@ -596,6 +652,211 @@ class ChatStore {
     }
   }
 
+  // ── Gen 2 IM Agent 灰度字流（WS draft/confirm 接收端）────────────
+
+  /**
+   * 处理后端 WebSocket `draft` 事件。
+   * - 把对应 stream_session_id 的最后一条 assistant 消息标记为 is_draft
+   * - 若没有对应消息（draft 早于消息创建），fallback 到 streamingContent 路径
+   *
+   * Classic Agent / 普通私聊完全不影响（不调此方法即可）。
+   *
+   * @param payload WS draft 事件 payload，含 session_id / content / tool_name?
+   */
+  applyDraftEvent(payload: {
+    session_id: string;
+    content: string;
+    tool_name?: string;
+  }): void {
+    const sid = payload?.session_id;
+    if (!sid) return;
+    const chunk = payload.content ?? "";
+    if (!chunk) return;
+
+    // 1) 优先找已有 messages 里的 draft 标记
+    const msgs = this.state.messages;
+    let lastAssistantIdx = -1;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === "assistant") {
+        lastAssistantIdx = i;
+        break;
+      }
+    }
+    if (lastAssistantIdx >= 0) {
+      const target = msgs[lastAssistantIdx];
+      if (target.stream_session_id === sid && target.is_draft) {
+        // 已存在 draft 行 → 追加内容
+        const updated: ChatMessage = {
+          ...target,
+          content: target.content + chunk,
+        };
+        const next = msgs.slice();
+        next[lastAssistantIdx] = updated;
+        this.update({ messages: next });
+        return;
+      }
+    }
+
+    // 2) fallback：开启草稿态（往后会在 confirm 时清零）
+    this.update({
+      streaming: true,
+      streamingContent:
+        (this.state.streamingContent ?? "") + chunk,
+    });
+  }
+
+  /**
+   * 处理后端 WebSocket `confirm` 事件：把对应 session 的灰字流固化、清 is_draft。
+   *
+   * @param payload WS confirm 事件 payload，含 session_id / content
+   */
+  applyConfirmEvent(payload: {
+    session_id: string;
+    content: string;
+  }): void {
+    const sid = payload?.session_id;
+    if (!sid) return;
+    const confirmedContent = payload.content ?? "";
+
+    const msgs = this.state.messages;
+    let lastAssistantIdx = -1;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === "assistant") {
+        lastAssistantIdx = i;
+        break;
+      }
+    }
+    if (lastAssistantIdx >= 0) {
+      const target = msgs[lastAssistantIdx];
+      if (target.stream_session_id === sid) {
+        const updated: ChatMessage = {
+          ...target,
+          content: confirmedContent || target.content,
+          is_draft: false,
+        };
+        const next = msgs.slice();
+        next[lastAssistantIdx] = updated;
+        this.update({
+          messages: next,
+          streaming: false,
+          streamingContent: "",
+        });
+        return;
+      }
+    }
+    // fallback：清空 streaming
+    this.update({
+      streaming: false,
+      streamingContent: "",
+    });
+  }
+
+  // ── Gen 2 IM Agent WebSocket 连接 ────────────────────────────
+
+  /**
+   * 建立一条 WebSocket 连接，监听后端推送的 draft / confirm 事件。
+   * - 同 sessionId 已有连接：直接 return（不重连）
+   * - 不同 sessionId：先断开旧的，再建新的（切换会话时触发）
+   * - URL 规则：`{ws-base}/api/chat/ws?session_id={sid}`，其中 ws-base 由
+   *   API_CONFIG.BASE_URL 推导（http→ws / https→wss）。
+   *
+   * 注意：当前实现不做自动重连。Mobile 端会话切换频繁，重连逻辑让上层
+   * (useFocusEffect / useEffect on sessionId) 显式触发更可控。
+   */
+  connectWebSocket(sessionId: string): void {
+    if (!sessionId) return;
+    if (this.ws && this.wsSessionId === sessionId) {
+      // 同一会话已有连接 —— 跳过
+      return;
+    }
+    // 切会话或首次连接：先关旧的
+    this.disconnectWebSocket();
+
+    const apiBase = API_CONFIG.BASE_URL.replace(/\/$/, "");
+    const wsBase = apiBase.replace(/^http/, "ws");
+    const token = encodeURIComponent(api.getToken() ?? "");
+    const wsUrl = `${wsBase}/ws/client?token=${token}&channel=mobile&session_id=${encodeURIComponent(sessionId)}`;
+    this.wsSessionId = sessionId;
+
+    try {
+      const socket = new WebSocket(wsUrl);
+      this.ws = socket;
+
+      socket.onopen = () => {
+        // eslint-disable-next-line no-console
+        console.log("[WS] connected", sessionId);
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const raw = typeof event.data === "string" ? event.data : "";
+          if (!raw) return;
+          const data = JSON.parse(raw) as Record<string, unknown>;
+          const evt =
+            (typeof data.event === "string" && data.event) ||
+            (typeof data.type === "string" && data.type) ||
+            "";
+
+          if (evt === "draft") {
+            this.applyDraftEvent({
+              session_id:
+                (typeof data.session_id === "string" && data.session_id) ||
+                sessionId,
+              content: typeof data.content === "string" ? data.content : "",
+              tool_name:
+                typeof data.tool_name === "string" ? data.tool_name : undefined,
+            });
+          } else if (evt === "confirm") {
+            this.applyConfirmEvent({
+              session_id:
+                (typeof data.session_id === "string" && data.session_id) ||
+                sessionId,
+              content: typeof data.content === "string" ? data.content : "",
+            });
+          }
+          // 其他事件类型（ping / heartbeat 等）：静默忽略
+        } catch {
+          // 非 JSON（心跳 ping 等），忽略
+        }
+      };
+
+      socket.onclose = () => {
+        // eslint-disable-next-line no-console
+        console.log("[WS] disconnected", sessionId);
+        if (this.ws === socket) {
+          this.ws = null;
+        }
+        // 不自动重连：切走/退出会话时调用方会显式 disconnectWebSocket
+      };
+
+      socket.onerror = (err) => {
+        // eslint-disable-next-line no-console
+        console.warn("[WS] error", sessionId, err);
+      };
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[WS] failed to construct", sessionId, err);
+      this.ws = null;
+    }
+  }
+
+  /** 断开 WebSocket（退出会话 / reset 时调用） */
+  disconnectWebSocket(): void {
+    if (this.wsReconnectTimer) {
+      clearTimeout(this.wsReconnectTimer);
+      this.wsReconnectTimer = null;
+    }
+    if (this.ws) {
+      try {
+        this.ws.close();
+      } catch {
+        // ignore
+      }
+      this.ws = null;
+    }
+    this.wsSessionId = null;
+  }
+
   // ── 内部工具 ─────────────────────────────────────────────
 
   private applyDetail(detail: ChatSessionDetail): void {
@@ -610,6 +871,10 @@ class ChatStore {
       currentGroupName: detail.group_name ?? null,
       currentAgentId: detail.agent_id ?? null,
       currentAgentName: detail.agent_name ?? null,
+      // 重置 agentMode：fetchSession 紧接着会调 fetchAgentMode 把它填上。
+      // 这样在切会话的瞬时，WS 一定是断开状态，避免把旧 Agent 的 mode
+      // 误用到新会话上导致错误的连接。
+      agentMode: null,
     });
   }
 

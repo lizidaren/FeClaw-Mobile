@@ -17,6 +17,7 @@
  */
 
 import React from "react";
+import { useWindowDimensions } from "react-native";
 import { NavigationContainer } from "@react-navigation/native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
@@ -66,12 +67,17 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 const AuthStack = createNativeStackNavigator<AuthStackParamList>();
 
 function MainTabs() {
+  const { width } = useWindowDimensions();
+  const isTabletWidth = width >= 600;
+
   return (
     <Tab.Navigator
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: "#1976d2",
         tabBarInactiveTintColor: "#888",
+        tabBarPosition: isTabletWidth ? "top" : "bottom",
+        tabBarStyle: { height: isTabletWidth ? 48 : 65 },
       }}
     >
       <Tab.Screen

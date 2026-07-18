@@ -237,6 +237,20 @@ export interface ChatMessage {
    * 退出再进会话时若不保留这个字段，工具调用会"消失"。
    */
   tool_calls?: ToolCall[];
+  /**
+   * Gen 2 IM Agent 灰度字流标记：true 时表示消息处于「draft」阶段（LLM 推理中），
+   * 内容尚未被 reply_buffer_flush 确认，前端应渲染灰色文字。confirm 事件到达后
+   * 重新渲染为正常颜色。
+   *
+   * 注意：目前 Mobile 通过 SSE 消费流，draft/confirm 主要走 WebSocket（web 渠道），
+   * 此字段作为元数据预留。如果 Mobile 后续接入 WS，应在 draft 到达时设为 true、
+   * confirm 到达时清零。
+   */
+  is_draft?: boolean;
+  /**
+   * 与 is_draft 配套：当前消息所属的 session id（用于 WS draft/confirm 关联）。
+   */
+  stream_session_id?: string;
 }
 
 /** 会话详情（列表 + 消息） */
@@ -396,6 +410,14 @@ export interface AgentInfo {
   name: string;
   description?: string;
   avatar_url?: string;
+  /**
+   * Agent 模式：
+   * - "classic"：Gen 1 经典 Agent，SSE 流式消费（chatStream），不走 WebSocket draft/confirm。
+   * - "im"     ：Gen 2 IM Agent，SSE 主干流 + WebSocket draft/confirm 灰度字流。
+   *
+   * 后端旧实现可能不返回该字段；缺失时前端按 "classic" 处理。
+   */
+  agent_mode?: "classic" | "im";
 }
 
 /** ── Agent 模板 / 创建 ───────────────────────────────── */

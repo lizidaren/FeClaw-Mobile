@@ -28,6 +28,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
@@ -158,6 +159,9 @@ function buildNoticeLine(entries: ZentrimEntry[]): string | null {
 export function HomeScreen() {
   const navigation = useNavigation<HomeScreenNavigationProp>();
   const { entries, loading, error } = useZentrimStore();
+  const { width: windowWidth } = useWindowDimensions();
+  // 平板（宽 ≥600）下三张卡片横排；否则保持手机竖排
+  const isTabletWidth = windowWidth >= 600;
   const [noticeVisible, setNoticeVisible] = useState(false);
   const [allNotesVisible, setAllNotesVisible] = useState(false);
   const [actionEntryId, setActionEntryId] = useState<string | null>(null);
@@ -336,6 +340,7 @@ export function HomeScreen() {
           key={card.kind}
           style={({ pressed }) => [
             styles.cardRow,
+            isTabletWidth && styles.cardRowTablet,
             !colored && styles.cardRowEmpty,
             pressed && styles.cardRowPressed,
           ]}
@@ -353,7 +358,7 @@ export function HomeScreen() {
         </Pressable>
       );
     },
-    [onCardPress],
+    [onCardPress, isTabletWidth],
   );
 
   return (
@@ -381,8 +386,8 @@ export function HomeScreen() {
           <Text style={styles.noticeEmpty}>{HOME_EMPTY_NOTICE}</Text>
         )}
 
-        {/* 三张竖排卡片（每张可点击） */}
-        <View style={styles.cardsColumn}>
+        {/* 三张卡片（每张可点击）：平板横排、手机竖排 */}
+        <View style={[styles.cardsColumn, isTabletWidth && styles.cardsRowTablet]}>
           {cards.map(renderCard)}
         </View>
 
@@ -549,10 +554,16 @@ const styles = StyleSheet.create({
     color: "#bbb",
     marginBottom: 20,
   },
-  // ── 竖排卡片 ──
+  // ── 卡片（手机竖排 / 平板横排） ──
   cardsColumn: {
     flexDirection: "column",
-    gap: 8,
+    gap: 12,
+  },
+  /** 平板下让三张卡片并排显示；flexBasis ≈ 1/3，剩余宽度留给 gap */
+  cardsRowTablet: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 20,
   },
   cardRow: {
     flexDirection: "row",
@@ -564,6 +575,12 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "#E5E5E5",
+  },
+  /** 平板下卡片约占 1/3 宽度；flexBasis 比 33.333% 略小，保留 flexWrap 余量 */
+  cardRowTablet: {
+    flexBasis: "31%",
+    flexGrow: 0,
+    minWidth: 0,
   },
   cardRowEmpty: {
     backgroundColor: "#f0f0f0",

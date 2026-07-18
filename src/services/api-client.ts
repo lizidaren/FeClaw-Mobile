@@ -928,9 +928,11 @@ export class ApiClient {
   /**
    * 通过 agent_hash 获取单个 Agent。
    * 后端有两条：
-   *   GET /api/console/agents/by-hash/{hash}   → {status, agent: {id, hash, name, ...}}
-   *   GET /api/user/agents/{hash}              → {hash, name, description, ...}
+   *   GET /api/console/agents/by-hash/{hash}   → {status, agent: {id, hash, name, agent_mode, ...}}
+   *   GET /api/user/agents/{hash}              → {hash, name, description, agent_mode, ...}
    * 优先用 console 接口（更详细），降级到 user 接口。
+   *
+   * agent_mode 缺失或未知值时返回 undefined；调用方按 Classic 处理（向后兼容）。
    */
   async getAgent(agentId: string): Promise<AgentInfo> {
     try {
@@ -941,6 +943,7 @@ export class ApiClient {
           hash: string;
           name: string;
           description?: string;
+          agent_mode?: string;
         };
       }>("GET", `/api/console/agents/by-hash/${encodeURIComponent(agentId)}`);
       if (raw?.agent) {
@@ -948,6 +951,7 @@ export class ApiClient {
           agent_id: raw.agent.hash,
           name: raw.agent.name,
           description: raw.agent.description,
+          agent_mode: normalizeAgentMode(raw.agent.agent_mode),
         };
       }
     } catch (err) {
@@ -960,11 +964,13 @@ export class ApiClient {
       hash: string;
       name: string;
       description?: string;
+      agent_mode?: string;
     }>("GET", `/api/user/agents/${encodeURIComponent(agentId)}`);
     return {
       agent_id: raw.hash,
       name: raw.name,
       description: raw.description,
+      agent_mode: normalizeAgentMode(raw.agent_mode),
     };
   }
 
@@ -1223,3 +1229,13 @@ export class ApiClient {
 
 /** 全局单例。组件内直接 `import { api } from "..."` 即可。 */
 export const api = new ApiClient();
+
+/**
+ * 把后端返回的 agent_mode 字符串归一化到联合类型。
+ * 缺失或未知值 → undefined（前端按 classic 处理）。
+ */
+function normalizeAgentMode(mode?: string): "classic" | "im" | undefined {
+  if (mode === "im") return "im";
+  if (mode === "classic") return "classic";
+  return undefined;
+}

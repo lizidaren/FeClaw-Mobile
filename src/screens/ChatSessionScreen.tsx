@@ -23,6 +23,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -230,11 +231,17 @@ export function ChatSessionScreen() {
   const navigation = useNavigation<Nav>();
   const route = useRoute<RouteT>();
   const initialSessionId = route.params?.sessionId ?? null;
+  const { width: windowWidth } = useWindowDimensions();
+  const bubbleMaxWidth =
+    windowWidth >= 600
+      ? Math.min(windowWidth * 0.6, 600)
+      : windowWidth * 0.82;
 
   const {
     currentSessionId,
     currentTopic,
     currentAgentName,
+    agentMode,
     messages,
     streaming,
     streamingContent,
@@ -270,6 +277,24 @@ export function ChatSessionScreen() {
       }
     }, [initialSessionId, messages.length, streaming]),
   );
+
+  // Gen 2 IM Agent WebSocket：当前会话变化 / 卸载时连接/断开。
+  // - 用 `currentSessionId ?? initialSessionId` 让首次渲染（fetchSession 还没回）时
+  //   也能立刻拿到一个 sessionId 去连后端 ws_manager。
+  // - 仅当 agentMode === "im" 时才连 WS：Classic Agent 完全走 SSE，不发起无意义的连接。
+  //   agentMode 还在加载（null）时也不连，等 fetchAgentMode 回来再决定。
+  // - 同一 sessionId 切换前后值相同时 React 不会重跑 effect，因此不会触发
+  //   「断开再重连」的抖动。
+  // - 依赖包含 sessionForWs + agentMode：切会话 / 退栈 / 卸载 / mode 翻转都触发 cleanup 释放。
+  const sessionForWs = currentSessionId ?? initialSessionId;
+  useEffect(() => {
+    if (agentMode === "im" && sessionForWs) {
+      chatStore.connectWebSocket(sessionForWs);
+    }
+    return () => {
+      chatStore.disconnectWebSocket();
+    };
+  }, [sessionForWs, agentMode]);
 
   /** 是否在等待会话就绪（没有 sessionId 时为 true） */
   const waitingForSession = initialSessionId === null;
@@ -511,7 +536,11 @@ export function ChatSessionScreen() {
               : `msg-${idx}`
           }
           renderItem={({ item }) => (
-            <MessageBubble msg={item} onPreviewImage={setPreviewUri} />
+            <MessageBubble
+              msg={item}
+              onPreviewImage={setPreviewUri}
+              maxWidth={bubbleMaxWidth}
+            />
           )}
           contentContainerStyle={styles.listContent}
           ListEmptyComponent={
@@ -531,7 +560,10 @@ export function ChatSessionScreen() {
           }
           ListFooterComponent={
             streaming ? (
-              <StreamingBubble content={streamingContent} />
+              <StreamingBubble
+                content={streamingContent}
+                maxWidth={bubbleMaxWidth}
+              />
             ) : null
           }
           onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
@@ -803,14 +835,19 @@ function AgentPickerRow({
 function MessageBubble({
   msg,
   onPreviewImage,
+  maxWidth,
 }: {
   msg: ChatMessage;
   onPreviewImage: (uri: string) => void;
+  /** 气泡最大宽度（按窗口宽度计算，平板略宽但加 cap 防超界） */
+  maxWidth: number;
 }) {
   const isUser = msg.role === "user";
   const segments = useMemo(() => renderMarkdown(msg.content), [msg.content]);
   const hasToolCalls =
     !isUser && !!msg.tool_calls && msg.tool_calls.length > 0;
+  // Gen 2 IM Agent 灰度字流：draft 阶段用灰色，confirm 后切回正常色
+  const isDraft = !isUser && !!msg.is_draft;
 
   return (
     <View>
@@ -823,6 +860,7 @@ function MessageBubble({
           style={[
             styles.bubble,
             isUser ? styles.bubbleUser : styles.bubbleAssistant,
+            { maxWidth },
           ]}
         >
           {/* 附带图片缩略图 */}
@@ -865,7 +903,11 @@ function MessageBubble({
               <Text
                 style={[
                   styles.bubbleText,
-                  isUser ? styles.bubbleTextUser : styles.bubbleTextAssistant,
+                  isUser
+                    ? styles.bubbleTextUser
+                    : isDraft
+                    ? styles.bubbleTextAssistantDraft
+                    : styles.bubbleTextAssistant,
                 ]}
               >
                 {" "}
@@ -875,7 +917,11 @@ function MessageBubble({
             <Text
               style={[
                 styles.bubbleText,
-                isUser ? styles.bubbleTextUser : styles.bubbleTextAssistant,
+                isUser
+                  ? styles.bubbleTextUser
+                  : isDraft
+                  ? styles.bubbleTextAssistantDraft
+                  : styles.bubbleTextAssistant,
               ]}
             >
               {segments.map((seg, idx) => {
@@ -891,7 +937,11 @@ function MessageBubble({
                   );
                 }
                 const segStyle = [
-                  isUser ? styles.bubbleTextUser : styles.bubbleTextAssistant,
+                  isUser
+                    ? styles.bubbleTextUser
+                    : isDraft
+                    ? styles.bubbleTextAssistantDraft
+                    : styles.bubbleTextAssistant,
                   seg.bold && styles.mdBold,
                   seg.code && !seg.block && styles.mdCodeInline,
                   seg.block && styles.mdCodeBlock,
@@ -1007,12 +1057,12 @@ function FileCard({ file }: { file: ChatFileAttachment }) {
   );
 }
 
-function StreamingBubble({ content }: { content: string }) {
+function StreamingBubble({ content, maxWidth }: { content: string; maxWidth: number }) {
   const segments = useMemo(() => renderMarkdown(content), [content]);
   const showCursor = content.length === 0;
   return (
     <View style={[styles.row, styles.rowAssistant]}>
-      <View style={[styles.bubble, styles.bubbleAssistant]}>
+      <View style={[styles.bubble, styles.bubbleAssistant, { maxWidth }]}>
         {showCursor ? (
           <Text style={[styles.bubbleText, styles.bubbleTextAssistant]}>
             <Text style={styles.cursor}>●●●</Text>
@@ -1276,6 +1326,15 @@ const styles = StyleSheet.create({
   },
   bubbleTextAssistant: {
     color: "#1a1a1a",
+  },
+  /**
+   * Gen 2 IM Agent 灰度字流：assistant 消息处于 draft 阶段时（WS draft 事件到达、
+   * 尚未收到 confirm）使用灰色文字。目前 Mobile 通过 SSE 消费流，此样式作为占位
+   * 预留：若未来 Mobile 接入 WebSocket（与共享 ws_manager 通信），即可在 is_draft
+   * 时把气泡渲染成此颜色，confirm 时切回 bubbleTextAssistant。
+   */
+  bubbleTextAssistantDraft: {
+    color: "#9E9E9E", // 中性灰
   },
   mdBold: {
     fontWeight: "700",
