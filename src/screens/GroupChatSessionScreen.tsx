@@ -50,6 +50,8 @@ import type {
   GroupMember,
 } from "../types/api";
 import type { RootStackParamList } from "../navigation/AppNavigator";
+import { Icon } from "../components/Icon";
+
 
 type DocPickerResult = {
   uri: string;
@@ -261,7 +263,7 @@ export function GroupChatSessionScreen() {
         </Pressable>
         <View style={styles.titleWrap}>
           <Text style={styles.topTitle} numberOfLines={1}>
-            👥 {headerTitle}
+            <Icon name="group" size={16} /> {headerTitle}
           </Text>
           <Text style={styles.topSubtitle} numberOfLines={1}>
             {memberCount > 0 ? `${memberCount} 位成员` : "群聊"}
@@ -273,7 +275,7 @@ export function GroupChatSessionScreen() {
 
       {error !== null && (
         <View style={styles.errorBanner}>
-          <Text style={styles.errorText}>⚠️ {error}</Text>
+          <Text style={styles.errorText}><Icon name="warning" size={16} />️ {error}</Text>
         </View>
       )}
 
@@ -319,7 +321,7 @@ export function GroupChatSessionScreen() {
           <View style={styles.pendingFilesBox}>
             {pendingFiles.map((f, idx) => (
               <View key={`file-${idx}`} style={styles.pendingFileRow}>
-                <Text style={styles.pendingFileIcon}>📄</Text>
+                <Text style={styles.pendingFileIcon}><Icon name="description" size={16} /></Text>
                 <View style={styles.pendingFileMeta}>
                   <Text style={styles.pendingFileName} numberOfLines={1}>
                     {f.name}
@@ -347,7 +349,7 @@ export function GroupChatSessionScreen() {
             disabled={sending}
             accessibilityLabel="选择图片"
           >
-            <Text style={styles.attachBtnText}>📷</Text>
+            <Text style={styles.attachBtnText}><Icon name="camera-alt" size={16} /></Text>
           </Pressable>
           <Pressable
             onPress={handlePickFile}
@@ -356,7 +358,7 @@ export function GroupChatSessionScreen() {
             disabled={sending}
             accessibilityLabel="选择文件"
           >
-            <Text style={styles.attachBtnText}>📎</Text>
+            <Text style={styles.attachBtnText}><Icon name="attach-file" size={16} /></Text>
           </Pressable>
           <TextInput
             style={styles.textInput}
@@ -529,7 +531,7 @@ function FileCard({ file }: { file: ChatFileAttachment }) {
 
   return (
     <Pressable style={styles.fileCard} onPress={handleOpen}>
-      <Text style={styles.fileCardIcon}>📄</Text>
+      <Text style={styles.fileCardIcon}><Icon name="description" size={16} /></Text>
       <View style={styles.flex}>
         <Text style={styles.fileCardName} numberOfLines={1}>
           {file.name}

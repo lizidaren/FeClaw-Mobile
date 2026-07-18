@@ -3,7 +3,7 @@
  *
  * - 顶部：返回箭头 + topic / agent 切换 + 删除按钮
  * - 中部：消息列表（用户右蓝 / 助手左灰），streaming 时底部打字动画
- * - 底部：TextInput + 📷 / 📎 按钮 + @ 提及 + 发送按钮
+ * - 底部：TextInput + <Icon name="camera-alt" size={16} /> / <Icon name="attach-file" size={16} /> 按钮 + @ 提及 + 发送按钮
  * - Markdown 渲染：轻量自实现（**粗体** / `代码` / 代码块 / 换行 / 图片 ![](url)）
  * - 附件：图片点击全屏预览，文件显示文件卡
  */
@@ -52,6 +52,8 @@ import type {
 } from "../types/api";
 import type { RootStackParamList } from "../navigation/AppNavigator";
 import { chatSessionDisplayTopic } from "../constants/strings";
+import { Icon } from "../components/Icon";
+
 
 // 文档选择器（用户安装；未装时动态降级为只提示）
 type DocPickerResult = {
@@ -516,7 +518,7 @@ export function ChatSessionScreen() {
 
       {error !== null && (
         <View style={styles.errorBanner}>
-          <Text style={styles.errorText}>⚠️ {error}</Text>
+          <Text style={styles.errorText}><Icon name="warning" size={16} />️ {error}</Text>
         </View>
       )}
 
@@ -552,7 +554,7 @@ export function ChatSessionScreen() {
               </View>
             ) : (
               <View style={styles.emptyWrap}>
-                <Text style={styles.emptyEmoji}>💬</Text>
+                <Text style={styles.emptyEmoji}><Icon name="chat" size={16} /></Text>
                 <Text style={styles.emptyText}>开始一次新对话吧</Text>
                 <Text style={styles.emptyHint}>在下方输入第一条消息</Text>
               </View>
@@ -597,7 +599,7 @@ export function ChatSessionScreen() {
           <View style={styles.pendingFilesBox}>
             {pendingFiles.map((f, idx) => (
               <View key={`file-${idx}`} style={styles.pendingFileRow}>
-                <Text style={styles.pendingFileIcon}>📄</Text>
+                <Text style={styles.pendingFileIcon}><Icon name="description" size={16} /></Text>
                 <View style={styles.pendingFileMeta}>
                   <Text style={styles.pendingFileName} numberOfLines={1}>
                     {f.name}
@@ -625,7 +627,7 @@ export function ChatSessionScreen() {
             disabled={streaming}
             accessibilityLabel="选择图片"
           >
-            <Text style={styles.attachBtnText}>◻</Text>
+            <Text style={styles.attachBtnText}><Icon name="check-box-outline-blank" size={16} /></Text>
           </Pressable>
           <Pressable
             onPress={handlePickFile}
@@ -819,7 +821,7 @@ function AgentPickerRow({
 }) {
   return (
     <Pressable style={styles.mentionItem} onPress={onPick}>
-      <Text style={styles.mentionAvatar}>🤖</Text>
+      <Text style={styles.mentionAvatar}><Icon name="smart-toy" size={16} /></Text>
       <View style={styles.flex}>
         <Text style={styles.mentionName}>{agent.name}</Text>
         {!!agent.description && (
@@ -993,8 +995,8 @@ function ToolCallBlock({ tc }: { tc: ToolCall }) {
     return JSON.stringify(tc.args, null, 2);
   }, [tc.args]);
   const headerLabel = useMemo(() => {
-    if (tc.name) return `🔧 ${tc.name}`;
-    return "🔧 tool";
+    if (tc.name) return `\ud83d\udd27 ${tc.name}`;
+    return "\ud83d\udd27 tool";
   }, [tc.name]);
   return (
     <Pressable
@@ -1045,7 +1047,7 @@ function FileCard({ file }: { file: ChatFileAttachment }) {
 
   return (
     <Pressable style={styles.fileCard} onPress={handleOpen}>
-      <Text style={styles.fileCardIcon}>📄</Text>
+      <Text style={styles.fileCardIcon}><Icon name="description" size={16} /></Text>
       <View style={styles.flex}>
         <Text style={styles.fileCardName} numberOfLines={1}>
           {file.name}

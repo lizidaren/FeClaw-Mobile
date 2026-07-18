@@ -60,22 +60,22 @@ export const PDF_INSERT = (n: number) => `插入 ${n} 页`;
 export const COLOR_PANEL_TITLE = "选择颜色";
 
 // ── HomeScreen ──
-export const HOME_GREETING_LATE_NIGHT = "🌙 夜深了，记得休息";
-export const HOME_GREETING_MORNING = "☀️ 早上好，今天有物理课";
-export const HOME_GREETING_NOON = "🌞 中午好，吃完饭再学习吧";
-export const HOME_GREETING_AFTERNOON = "🌤️ 下午好，继续加油";
-export const HOME_GREETING_EVENING = "🌙 晚上好，今天辛苦了";
+export const HOME_GREETING_LATE_NIGHT = "[moon] 夜深了，记得休息";
+export const HOME_GREETING_MORNING = "[sun]️ 早上好，今天有物理课";
+export const HOME_GREETING_NOON = "[sun] 中午好，吃完饭再学习吧";
+export const HOME_GREETING_AFTERNOON = "[sun]️ 下午好，继续加油";
+export const HOME_GREETING_EVENING = "[moon] 晚上好，今天辛苦了";
 export const HOME_LOGOUT = "登出";
 export const HOME_EMPTY_NOTICE = "开始你的第一条笔记吧";
 export const HOME_CARD_TODO = "TODO";
 export const HOME_CARD_ACTIVE = "完成度追踪";
 export const HOME_CARD_ALL = "全部笔记";
 export const HOME_NOTICE_TODO = (count: number) =>
-  `💡 你有 ${count} 条待办事项还没处理`;
+  `[idea] 你有 ${count} 条待办事项还没处理`;
 export const HOME_NOTICE_RECENT = (dateLabel: string) =>
-  `💡 最近的笔记更新于 ${dateLabel}`;
+  `[idea] 最近的笔记更新于 ${dateLabel}`;
 export const HOME_FAB_A11Y = "新建笔记";
-export const HOME_ERROR_HINT_PREFIX = "⚠️ ";
+export const HOME_ERROR_HINT_PREFIX = "[!]️ ";
 export const HOME_NOTICE_MODAL_TITLE = "Zentrim 提示";
 export const HOME_NOTICE_MODAL_BLANK = "暂时没有需要关注的提示";
 export const HOME_NOTICE_BTN_EXPAND = "展开看看";
@@ -98,13 +98,13 @@ export const HOME_DELETE_TITLE = "删除笔记";
 export const HOME_DELETE_BODY = "确定删除？删除后不可恢复。";
 export const HOME_DELETE_BTN = "删除";
 export const HOME_CANCEL = "取消";
-export const HOME_ACTION_ARCHIVE = "📦 归档";
-export const HOME_ACTION_DELETE = "🗑️ 删除";
+export const HOME_ACTION_ARCHIVE = "[box] 归档";
+export const HOME_ACTION_DELETE = "[del]️ 删除";
 export const HOME_ACTION_CANCEL = "取消";
 export const HOME_EMPTY_TITLE = "(无标题)";
 
 // ── ChatListScreen ──
-export const CHAT_TITLE = "💬 聊天";
+export const CHAT_TITLE = "[chat] 聊天";
 export const CHAT_NEW_BTN = "＋";
 export const CHAT_NEW_A11Y = "新建聊天";
 export const CHAT_TAB_PRIVATE = "私聊";
@@ -136,4 +136,4 @@ export const CHAT_EMPTY_PRIVATE_HINT = "点右上角 + 开始一次新对话";
 export const CHAT_EMPTY_GROUP = "还没有群聊";
 export const CHAT_EMPTY_GROUP_HINT = "点此刷新";
 export const CHAT_REFRESH_BTN = "刷新";
-export const CHAT_GROUP_COUNT = (n: number | string) => `👥 ${n}人`;
+export const CHAT_GROUP_COUNT = (n: number | string) => `[group] ${n}人`;

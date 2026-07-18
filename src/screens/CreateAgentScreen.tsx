@@ -33,6 +33,8 @@ import { api } from "../services/api-client";
 import { chatStore } from "../services/chat-store";
 import type { AgentTemplate } from "../types/api";
 import type { RootStackParamList } from "../navigation/AppNavigator";
+import { Icon } from "../components/Icon";
+
 
 type Nav = NativeStackNavigationProp<RootStackParamList, "CreateAgent">;
 
@@ -186,7 +188,7 @@ export function CreateAgentScreen() {
       {loadError !== null && manualMode && (
         <View style={styles.errorBanner}>
           <Text style={styles.errorText}>
-            ⚠️ 模板接口不可用，已开启手动创建模式
+            <Icon name="warning" size={16} />️ 模板接口不可用，已开启手动创建模式
           </Text>
         </View>
       )}

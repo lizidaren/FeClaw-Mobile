@@ -2,19 +2,21 @@
  * 录音状态气泡
  *
  * 三种形态：
- * - 录音态（recording）：左上角小椭圆，🎧 + 时间码
+ * - 录音态（recording）：左上角小椭圆，<Icon name="headset" size={16} /> + 时间码
  * - 已录态（recorded）：波形占位 + 时间码 + 🔊 播放按钮
- * - 回放态（playback）：拉长占顶，含 [📝ASR] [🔊音轨] [📷照片] 三个入口按钮
+ * - 回放态（playback）：拉长占顶，含 [<Icon name="note" size={16} />ASR] [🔊音轨] [<Icon name="camera-alt" size={16} />照片] 三个入口按钮
  *   - 转写完成前（asrReady=false）不显示 ASR 按钮
  */
 
 import React from "react";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import {
+
   RECORDING_ASR,
   RECORDING_AUDIO,
   RECORDING_PHOTOS,
 } from "../constants/strings";
+import { Icon } from "../components/Icon";
 
 export type RecordingMode = "recording" | "recorded" | "playback";
 
@@ -44,7 +46,7 @@ export const RecordingBubble = React.memo(function RecordingBubble({
   if (mode === "recording") {
     return (
       <View style={styles.recording}>
-        <Text style={styles.recDot}>🎧</Text>
+        <Text style={styles.recDot}><Icon name="headset" size={16} /></Text>
         <Text style={styles.recTime}>{timecode}</Text>
       </View>
     );

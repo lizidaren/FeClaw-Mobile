@@ -9,11 +9,13 @@
 import React from "react";
 import { StyleSheet, Text, TouchableOpacity } from "react-native";
 import {
+
   DRAFT_ENTER_A11Y,
   DRAFT_EXIT_A11Y,
   DRAFT_ACTIVE,
   DRAFT_INACTIVE,
 } from "../constants/strings";
+import { Icon } from "../components/Icon";
 
 export interface DraftToggleProps {
   isDraft: boolean;
@@ -31,7 +33,7 @@ export const DraftToggle = React.memo(function DraftToggle({ isDraft, onToggle }
       // fix(P1-2): 使用常量替代硬编码字符串
       accessibilityLabel={isDraft ? DRAFT_EXIT_A11Y : DRAFT_ENTER_A11Y}
     >
-      <Text style={[styles.icon, isDraft && styles.iconActive]}>🗒</Text>
+      <Text style={[styles.icon, isDraft && styles.iconActive]}><Icon name="note" size={18} /></Text>
       <Text style={[styles.label, isDraft && styles.labelActive]}>
         {isDraft ? DRAFT_ACTIVE : DRAFT_INACTIVE}
       </Text>

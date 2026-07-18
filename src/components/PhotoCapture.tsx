@@ -11,6 +11,8 @@ import React, { useState } from "react";
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity } from "react-native";
 import { launchCamera } from "react-native-image-picker";
 import { PHOTO_A11Y } from "../constants/strings";
+import { Icon } from "../components/Icon";
+
 
 /** 拍照结果 */
 export interface CapturedPhoto {
@@ -77,7 +79,7 @@ export const PhotoCapture = React.memo(function PhotoCapture({ onPhotoCapture, c
         <ActivityIndicator size="small" color="#333" />
       ) : (
         <>
-          <Text style={styles.icon}>📷</Text>
+          <Text style={styles.icon}><Icon name="camera-alt" size={24} /></Text>
           {!compact ? <Text style={styles.label}>{PHOTO_A11Y}</Text> : null}
         </>
       )}

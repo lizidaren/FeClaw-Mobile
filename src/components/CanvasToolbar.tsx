@@ -2,16 +2,17 @@
  * 画布左侧竖排工具栏
  *
  * 5 个按钮：笔 / 橡皮 / 拍照 / 撤销 / 录音
- * - ✏️ 笔 — 单击切到笔模式；已在笔模式再双击 → 打开颜色面板
- * - 🧹 橡皮 — 切到橡皮模式
- * - 📷 拍照 — 一键调用 onPhotoCapture
+ * - <Icon name="edit" size={18} /> 笔 — 单击切到笔模式；已在笔模式再双击 → 打开颜色面板
+ * - <Icon name="auto-fix-high" size={18} /> 橡皮 — 切到橡皮模式
+ * - <Icon name="camera-alt" size={18} /> 拍照 — 一键调用 onPhotoCapture
  * - ↩️ 撤销 — 调用 onUndo
- * - 🎤 录音 — 点击开始/停止录音；录音中按钮显示红色脉冲
+ * - <Icon name="mic" size={18} /> 录音 — 点击开始/停止录音；录音中按钮显示红色脉冲
  */
 
 import React, { useEffect, useMemo, useRef } from "react";
 import { Animated, Easing, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import { Icon } from "../components/Icon";
 import {
   TOOLBAR_PEN,
   TOOLBAR_PEN_A11Y,
@@ -96,26 +97,26 @@ export const CanvasToolbar = React.memo(function CanvasToolbar({
           accessibilityRole="button"
           accessibilityLabel={isInk ? TOOLBAR_PEN_A11Y : TOOLBAR_PEN}
         >
-          <Text style={[styles.icon, activeTool === null && styles.iconInactive]}>✏️</Text>
+          <Text style={[styles.icon, activeTool === null && styles.iconInactive]}><Icon name="edit" size={18} /></Text>
           <Text style={[styles.label, activeTool === null && styles.labelInactive]}>{TOOLBAR_PEN}</Text>
         </View>
       </GestureDetector>
       <ToolbarButton
         label={TOOLBAR_ERASER}
-        icon="🧹"
+        icon="✧"
         active={activeTool === "eraser"}
         inactive={activeTool === null}
         onPress={() => onSelectTool("eraser")}
       />
       <ToolbarButton
         label={TOOLBAR_PHOTO}
-        icon="📷"
+        icon="◉"
         active={false}
         onPress={onPhotoCapture}
       />
       <ToolbarButton
         label={TOOLBAR_UNDO}
-        icon="↩️"
+        icon="↩"
         active={false}
         disabled={!canUndo}
         onPress={onUndo}
@@ -177,7 +178,7 @@ const RecordingButton = React.memo(function RecordingButton({
       style={[styles.button, isRecording && styles.buttonRecording]}
     >
       <Animated.View style={{ transform: [{ scale: pulse }] }}>
-        <Text style={[styles.icon, isRecording && styles.iconRecording]}>🎤</Text>
+        <Text style={[styles.icon, isRecording && styles.iconRecording]}><Icon name="mic" size={18} /></Text>
       </Animated.View>
       <Text style={[styles.label, isRecording && styles.labelRecording]}>
         {isRecording ? "停止" : "录音"}
@@ -236,7 +237,7 @@ const styles = StyleSheet.create({
   container: {
     position: "absolute",
     // fix(Bug-2): CanvasScreen 的 editorLayer 是 zIndex: 5，会盖在工具栏上面
-    // 拦截触控。给工具栏更高 zIndex 让 📷/🎤 按钮在文字模式下也能点到。
+    // 拦截触控。给工具栏更高 zIndex 让 <Icon name="camera-alt" size={18} />/<Icon name="mic" size={18} /> 按钮在文字模式下也能点到。
     // 其他 UI（ThreeDotMenu / DraftToggle / FormatToolbar）同理高于 editorLayer。
     // FormatToolbar 自己已经 zIndex: 20，所以这里取 10 即可（>5 但 <20）。
     zIndex: 10,

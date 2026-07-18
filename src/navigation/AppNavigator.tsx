@@ -29,6 +29,8 @@ import { GroupChatSessionScreen } from "../screens/GroupChatSessionScreen";
 import { CanvasScreen } from "../screens/CanvasScreen";
 import { CreateAgentScreen } from "../screens/CreateAgentScreen";
 import { LoginScreen } from "../screens/LoginScreen";
+import { Icon } from "../components/Icon";
+
 
 /** 底部 Tab 路由表 */
 export type TabParamList = {
@@ -81,9 +83,7 @@ function MainTabs() {
         component={ChatListScreen}
         options={{
           tabBarLabel: "聊天",
-          tabBarIcon: ({ color }) => (
-            <Text style={{ fontSize: 22, color }}>💬</Text>
-          ),
+          tabBarIcon: ({ color }) => <Icon name="chat" size={22} color={color} />
         }}
       />
       <Tab.Screen
@@ -91,9 +91,7 @@ function MainTabs() {
         component={HomeScreen}
         options={{
           tabBarLabel: "格物所",
-          tabBarIcon: ({ color }) => (
-            <Text style={{ fontSize: 22, color }}>📦</Text>
-          ),
+          tabBarIcon: ({ color }) => <Icon name="inventory2" size={22} color={color} />
         }}
       />
     </Tab.Navigator>

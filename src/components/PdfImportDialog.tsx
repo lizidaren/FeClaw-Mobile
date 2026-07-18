@@ -2,8 +2,8 @@
  * PDF 导入对话框（Modal）
  *
  * 两种导入方式：
- * - 选项 A：📎 放个链接 —— PDF 作为附件链接挂到画布，不展开
- * - 选项 B：🖼️ 展开到画布 —— 展示页面缩略图选择器，可多选 / 全选，
+ * - 选项 A：<Icon name="attach-file" size={16} /> 放个链接 —— PDF 作为附件链接挂到画布，不展开
+ * - 选项 B：<Icon name="image" size={16} />️ 展开到画布 —— 展示页面缩略图选择器，可多选 / 全选，
  *           选中的页面作为图片元素插入画布
  */
 
@@ -31,6 +31,7 @@ import {
   PDF_BACK,
   PDF_INSERT,
 } from "../constants/strings";
+import { Icon } from "../components/Icon";
 
 /** PDF 单页（用于展开选择器） */
 export interface PdfPage {
@@ -113,7 +114,7 @@ export function PdfImportDialog({
     // 当前仅回调上层 onAttachLink；真实数据流应：
     //   1) 上传 PDF 文件 → VFS（curl /api/vfs/upload?path=...）
     //   2) 把 VFS path 写入画布 metadata.attachments
-    //   3) 在画布渲染一个 📎 占位节点，onClick → 打开预览
+    //   3) 在画布渲染一个 <Icon name="attach-file" size={16} /> 占位节点，onClick → 打开预览
     onAttachLink();
     close();
   };
@@ -135,7 +136,7 @@ export function PdfImportDialog({
         {stage === "choose" ? (
           <View style={styles.choices}>
             <TouchableOpacity style={styles.choice} activeOpacity={0.7} onPress={attach}>
-              <Text style={styles.choiceIcon}>📎</Text>
+              <Text style={styles.choiceIcon}><Icon name="attach-file" size={16} /></Text>
               <Text style={styles.choiceLabel}>{PDF_ATTACH_LINK}</Text>
               <Text style={styles.choiceHint}>{PDF_ATTACH_HINT}</Text>
             </TouchableOpacity>
@@ -144,7 +145,7 @@ export function PdfImportDialog({
               activeOpacity={0.7}
               onPress={() => setStage("select")}
             >
-              <Text style={styles.choiceIcon}>🖼️</Text>
+              <Text style={styles.choiceIcon}><Icon name="image" size={16} />️</Text>
               <Text style={styles.choiceLabel}>{PDF_EXPAND}</Text>
               <Text style={styles.choiceHint}>{PDF_EXPAND_HINT}</Text>
             </TouchableOpacity>

@@ -1,10 +1,10 @@
 /**
  * Chat 会话列表页
  *
- * 顶部："💬 聊天" 标题 + "+" 新建按钮
+ * 顶部："<Icon name="chat" size={16} /> 聊天" 标题 + "+" 新建按钮
  * 列表：私聊 + 群聊混排，按更新时间倒序，每个一行
  *   - 私聊：单头像圆形 + 标题
- *   - 群聊：群头像（多人头像叠加占位）+ 标题 + "👥 N人"
+ *   - 群聊：群头像（多人头像叠加占位）+ 标题 + "<Icon name="group" size={16} /> N人"
  * 操作：点行 → ChatSession / GroupChatSession；下拉刷新；空状态文案
  *
  * fix(Bug-4): 删除原本的 私聊/群聊 Tab 切换，私聊和群聊混排展示。
@@ -27,6 +27,7 @@ import { chatStore, useChatStore } from "../services/chat-store";
 import type { ChatSessionInfo, GroupInfo } from "../types/api";
 import type { RootStackParamList } from "../navigation/AppNavigator";
 import {
+
   CHAT_TITLE,
   CHAT_NEW_BTN,
   CHAT_NEW_A11Y,
@@ -39,6 +40,7 @@ import {
   CHAT_GROUP_COUNT,
   chatSessionDisplayTopic,
 } from "../constants/strings";
+import { Icon } from "../components/Icon";
 
 type Nav = NativeStackNavigationProp<RootStackParamList, "Main">;
 
@@ -163,7 +165,7 @@ export function ChatListScreen() {
       </View>
 
       {error !== null && rows.length === 0 && (
-        <Text style={styles.errorHint}>⚠️ {error}</Text>
+        <Text style={styles.errorHint}><Icon name="warning" size={16} />️ {error}</Text>
       )}
 
       <UnifiedList
@@ -191,7 +193,7 @@ function UnifiedList(props: {
   if (rows.length === 0 && !loading) {
     return (
       <View style={styles.emptyWrap}>
-        <Text style={styles.emptyEmoji}>💬</Text>
+        <Text style={styles.emptyEmoji}><Icon name="chat" size={16} /></Text>
         <Text style={styles.emptyText}>{CHAT_EMPTY_PRIVATE}</Text>
         <Text style={styles.emptyHint}>{CHAT_EMPTY_PRIVATE_HINT}</Text>
       </View>
@@ -311,7 +313,7 @@ function GroupAvatar({ name }: { name: string }) {
         <Text style={styles.groupAvatarText}>{name.slice(0, 1)}</Text>
       </View>
       <View style={[styles.groupAvatarItem, styles.groupAvatarItemBR]}>
-        <Text style={styles.groupAvatarText}>👥</Text>
+        <Text style={styles.groupAvatarText}><Icon name="group" size={16} /></Text>
       </View>
     </View>
   );

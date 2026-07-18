@@ -19,6 +19,7 @@ import {
   View,
 } from "react-native";
 import {
+
   MENU_A11Y,
   MENU_CREATED_AT,
   MENU_DEVICE,
@@ -34,6 +35,7 @@ import {
   MENU_COUNT_SUFFIX,
   MENU_MINUTES_SUFFIX,
 } from "../constants/strings";
+import { Icon } from "../components/Icon";
 
 /** 画布信息（展示用） */
 export interface CanvasInfo {
@@ -128,9 +130,9 @@ export function ThreeDotMenu({
 
           {/* 操作项 */}
           {/* fix(P2-2): 未实现的操作以 disabled 灰色显示，不再 console.warn */}
-          <MenuItem icon="🗂" label={MENU_CHANGE_TIMELINE} onPress={run(onChangeTimeline)} disabled={disabledItems.includes("timeline")} />
-          <MenuItem icon="🖼️" label={MENU_EXPORT_SVG} onPress={run(onExportSvg)} />
-          <MenuItem icon="🏞️" label={MENU_EXPORT_PNG} onPress={run(onExportPng)} disabled={disabledItems.includes("png")} />
+          <MenuItem icon="📁" label={MENU_CHANGE_TIMELINE} onPress={run(onChangeTimeline)} disabled={disabledItems.includes("timeline")} />
+          <MenuItem icon="🖼" label={MENU_EXPORT_SVG} onPress={run(onExportSvg)} />
+          <MenuItem icon="🏞" label={MENU_EXPORT_PNG} onPress={run(onExportPng)} disabled={disabledItems.includes("png")} />
           <MenuItem icon="📎" label={MENU_INSERT_FILE} onPress={run(onInsertFile)} />
 
           <TouchableOpacity style={styles.cancel} onPress={close}>

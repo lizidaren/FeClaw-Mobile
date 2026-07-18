@@ -18,6 +18,7 @@
     "@react-navigation/native-stack": "^7.17.10",
     "@react-navigation/stack": "^7.10.11",
     "@shopify/react-native-skia": "^2.8.0",
+    "@types/react-native-vector-icons": "^6.4.18",
     "react": "19.2.3",
     "react-native": "0.85.3",
     "react-native-document-picker": "^9.3.1",
@@ -25,6 +26,7 @@
     "react-native-image-picker": "^8.2.1",
     "react-native-safe-area-context": "^5.5.2",
     "react-native-screens": "^4.26.1",
+    "react-native-vector-icons": "^10.3.0",
     "react-native-webview": "^13.13.5"
   },
   "devDependencies": {
