@@ -308,6 +308,22 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
           } catch {
             // best-effort
           }
+          // fix(Bug-1): KeyboardModule.show() 弹出键盘后，contenteditable 可能还没 focus。
+          // 延迟再注入一次 focus，确保文字能打进编辑器。
+          setTimeout(() => {
+            try {
+              const w = webViewRef.current;
+              if (w) {
+                w.injectJavaScript(
+                  "(function(){var s=document.querySelector('.canvas-editor [contenteditable=\"true\"]');" +
+                    "if(s&&s.focus){s.focus();}" +
+                    "})(); true;",
+                );
+              }
+            } catch {
+              // best-effort
+            }
+          }, 150);
         },
         command(cmd: string) {
           sendToWebView("command", { command: cmd });

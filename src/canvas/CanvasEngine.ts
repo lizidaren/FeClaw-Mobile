@@ -101,6 +101,10 @@ export class CanvasEngine {
   private surfaceHeight = 0;
 
   // ── 订阅者 ──
+  /** fix(Bug-3): _disposed 标记, render 回调检查后跳过 */
+  _disposed = false;
+  /** fix(Bug-3): 待取消的 rAF handle */
+  private _pendingFrame: number | null = null;
   private subscribers: Set<EngineSubscriber> = new Set();
 
   // ── 配置 ──
@@ -190,6 +194,7 @@ export class CanvasEngine {
    * 背景透明：eraser 的 DstOut 会抠出透明孔，透出下方 Image 层 / 容器白底。
    */
   private rebuildSurface(): void {
+    if (this._disposed) return;
     const surface = this.persistentSurface;
     if (!surface) return;
     const canvas = surface.getCanvas();
@@ -472,13 +477,27 @@ export class CanvasEngine {
     this.subscribers.clear();
     this.coldStart.dispose();
     this.undoManager.clear();
-    // fix(P0-1): dispose 时也释放 persistent snapshot
-    if (this.persistentImage) {
-      this.persistentImage.dispose();
-      this.persistentImage = null;
+    // fix(Bug-3): 标记已销毁，后续 render 回调跳过
+    this._disposed = true;
+    // 取消待执行帧
+    if (this._pendingFrame !== null) {
+      cancelAnimationFrame(this._pendingFrame);
+      this._pendingFrame = null;
     }
-    this.persistentSurface = null;
+    // 先释放 Surface（中断渲染管线）
+    if (this.persistentSurface) {
+      this.persistentSurface = null;
+    }
+    // fix(Bug-3): 延迟一帧释放 persistentImage，避免 sksg reconciler 还在
+    // 回放渲染命令时引用已销毁的 SkImage（"Attempted to access a disposed object"）。
+    if (this.persistentImage) {
+      const img = this.persistentImage;
+      this.persistentImage = null;
+      requestAnimationFrame(() => { img.dispose(); });
+    }
     this.surfaceWidth = 0;
     this.surfaceHeight = 0;
   }
+
+
 }

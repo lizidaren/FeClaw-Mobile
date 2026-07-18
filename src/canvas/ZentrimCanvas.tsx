@@ -148,13 +148,20 @@ export function ZentrimCanvas({
   useEffect(() => {
     const eng = engineRef.current;
     if (!eng || screenSize.width <= 0 || screenSize.height <= 0) return;
-    // 让首帧先显示缩略图，下一个 tick 再构建 Surface
-    const id = setTimeout(() => {
-      const e = engineRef.current;
-      if (!e) return;
-      e.ensureSurface(screenSize.width, screenSize.height);
-    }, 0);
-    return () => clearTimeout(id);
+    // fix(Bug-2): 双层 defer（rAF → setTimeout 0）避免 Skia reconciler
+    // (sksg) 在 Fabric 下与 React 的 performWorkOnRoot 并发冲突。
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const raf = requestAnimationFrame(() => {
+      timer = setTimeout(() => {
+        const e = engineRef.current;
+        if (!e || e._disposed) return;
+        e.ensureSurface(screenSize.width, screenSize.height);
+      }, 0);
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      if (timer !== null) clearTimeout(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageId, screenSize.width, screenSize.height]);
 
