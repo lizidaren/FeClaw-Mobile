@@ -17,6 +17,7 @@
  */
 
 import React from "react";
+import { Text } from "react-native";
 import { NavigationContainer } from "@react-navigation/native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
@@ -78,12 +79,22 @@ function MainTabs() {
       <Tab.Screen
         name="ChatTab"
         component={ChatListScreen}
-        options={{ tabBarLabel: "💬 聊天" }}
+        options={{
+          tabBarLabel: "聊天",
+          tabBarIcon: ({ color }) => (
+            <Text style={{ fontSize: 22, color }}>💬</Text>
+          ),
+        }}
       />
       <Tab.Screen
         name="ZentrimTab"
         component={HomeScreen}
-        options={{ tabBarLabel: "📦 Zentrim" }}
+        options={{
+          tabBarLabel: "格物所",
+          tabBarIcon: ({ color }) => (
+            <Text style={{ fontSize: 22, color }}>📦</Text>
+          ),
+        }}
       />
     </Tab.Navigator>
   );
