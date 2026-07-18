@@ -161,7 +161,11 @@ export const CANVAS_EDITOR_HTML = `<!DOCTYPE html>
       }
 
       // 接收 RN 消息
+      // fix(D7): 加 origin 白名单。RN WebView 通过 injectJavaScript 注入时
+      // ev.origin 可能是 "null"（file:// 或 data: URL），其他来源一律拒绝，
+      // 避免恶意 iframe 越权调用。
       window.addEventListener("message", function (ev) {
+        if (ev.origin !== "null" && ev.origin !== "file://") return;
         handleRNMessage(ev.data);
       });
       // Android 兼容：直接覆盖 document.title 的方式不太通用，

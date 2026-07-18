@@ -108,6 +108,12 @@ class ChatStore {
   private listeners = new Set<() => void>();
   /** 当前进行中的流请求 AbortController（用于打断或中途取消） */
   private currentAbort: AbortController | null = null;
+  /**
+   * fix(P2-5): fetchSession 的最新请求 id。
+   * 旧会话的 fetch 慢回 → 覆盖新会话数据会导致 UI 闪现旧消息。
+   * 在 await 期间记录新值，回调时若不匹配则丢弃。
+   */
+  private lastFetchSessionRequestId: string | null = null;
 
   // ── 读取 ──────────────────────────────────────────────────
 
@@ -130,11 +136,16 @@ class ChatStore {
 
   async fetchSession(sessionId: string): Promise<void> {
     this.update({ loading: true, error: null });
+    // fix(P2-5): 每次调用生成唯一 requestId，回调时若已被新请求覆盖则丢弃。
+    const requestId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    this.lastFetchSessionRequestId = requestId;
     try {
       const detail = await api.getChatSession(sessionId);
+      if (this.lastFetchSessionRequestId !== requestId) return;
       this.applyDetail(detail);
       this.update({ loading: false });
     } catch (err) {
+      if (this.lastFetchSessionRequestId !== requestId) return;
       const message = err instanceof Error ? err.message : "获取会话详情失败";
       this.update({ error: message, loading: false });
     }
@@ -331,8 +342,10 @@ class ChatStore {
     this.update({ loading: true, error: null });
     try {
       const list = await api.listGroupMessages(groupId);
+      // fix(P1-6): 群消息 role 由后端的 sender_type 决定 —— 用户发的为 "user"，
+      // Agent 发的为 "assistant"。硬编码 "user" 会让 Agent 回复渲染成用户气泡。
       const messages: ChatMessage[] = list.map((m) => ({
-        role: "user",
+        role: m.sender_type === "user" ? "user" : "assistant",
         content: m.content,
         timestamp: m.timestamp,
         sender_id: m.sender_id,

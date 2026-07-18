@@ -23,13 +23,22 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Platform, View, type StyleProp, type ViewStyle } from "react-native";
+import { NativeModules, Platform, View, type StyleProp, type ViewStyle } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { CANVAS_EDITOR_HTML } from "../webview-editor/index";
 import type {
   EditorOutboundMessage,
   IElement,
 } from "../webview-editor/types";
+
+/**
+ * Native keyboard helper。
+ * 部分 Android 机型 WebView.requestFocus + JS focus 仍拉不起 IMM。
+ * 通过本地 Java 模块 KeyboardModule 显式调 InputMethodManager.showSoftInput 兜底。
+ * iOS / 不存在时为 undefined，调用前判空。
+ */
+const KeyboardNative: { show?: () => void } | undefined =
+  (NativeModules as { KeyboardModule?: { show?: () => void } }).KeyboardModule;
 
 export interface CanvasEditorProps {
   /** 初始内容（IElement[]），变化时通过 reloadContent 注入 */
@@ -227,6 +236,12 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
           } catch {
             // best-effort：失败也不抛错
           }
+          // 兜底：调本地 KeyboardModule.show() 拉起 IMM（部分 Android 机型必需）
+          try {
+            KeyboardNative?.show?.();
+          } catch {
+            // best-effort
+          }
           onReady?.();
         } else if (msg.type === "change") {
           const main = msg.payload?.main ?? [];
@@ -286,6 +301,12 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
             );
           } catch {
             // ignore
+          }
+          // 兜底：显式调本地 KeyboardModule.show() 拉起 IMM
+          try {
+            KeyboardNative?.show?.();
+          } catch {
+            // best-effort
           }
         },
         command(cmd: string) {

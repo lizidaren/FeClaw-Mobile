@@ -14,8 +14,8 @@ class MainApplication : Application(), ReactApplication {
       context = applicationContext,
       packageList =
         PackageList(this).packages.apply {
-          // Packages that cannot be autolinked yet can be added manually here, for example:
-          // add(MyReactNativePackage())
+          // 手动注册的本地模块包（不通过 autolink 发现）
+          add(KeyboardPackage())
         },
     )
   }

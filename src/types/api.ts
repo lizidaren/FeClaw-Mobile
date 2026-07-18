@@ -125,6 +125,12 @@ export interface Block {
   id?: string;
   type?: string;
   content?: string;
+  /**
+   * fix(P0-2): 后端 serialize_block 把结构化字段（strokes/images/url/...）
+   * 存在 `data` 字段（dict），而 `content` 通常装纯文本 / JSON 字符串。
+   * 前端写入路径要跟后端一致：ink/audio 用 `data`；text 用 `content`。
+   */
+  data?: Record<string, unknown>;
   order?: number;
   /** COS 远端路径（photo/file block 用） */
   cos_key?: string;

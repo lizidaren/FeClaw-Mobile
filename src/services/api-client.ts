@@ -482,6 +482,10 @@ export class ApiClient {
     };
 
     // SSE 解析：把一整段文本（可能含多个 event）拆成 event 数组
+    // fix(P2-3): 显式解析 `event:` 行 —— 后端若用 "event: tool_call" 推送，
+    // 我们需要把 type 字段从 event 行带到 ChatStreamEvent。
+    // 旧逻辑只读 `data:` 行，event 行被默默丢弃，导致 type=tool_call 事件
+    // 被当成普通 delta，最终 tool_calls 全丢。
     const parseChunk = (chunk: string): ChatStreamEvent[] => {
       const out: ChatStreamEvent[] = [];
       const parts = chunk.split("\n\n");
@@ -489,9 +493,14 @@ export class ApiClient {
         const trimmed = raw.trim();
         if (!trimmed) continue;
         let data = "";
+        let eventName: string | null = null;
         for (const line of trimmed.split("\n")) {
           if (line.startsWith("data:")) {
             data += line.slice(5).trim();
+          } else if (line.startsWith("event:")) {
+            // SSE 规范：`event: <name>` 紧跟 data 行，给当前事件命名
+            const name = line.slice(6).trim();
+            if (name) eventName = name;
           }
         }
         if (!data) continue;
@@ -502,12 +511,21 @@ export class ApiClient {
         try {
           const parsed = JSON.parse(data) as unknown;
           if (parsed && typeof parsed === "object") {
-            out.push(parsed as ChatStreamEvent);
+            const ev = parsed as ChatStreamEvent;
+            // event 行有命名 → 覆盖到 ev.type（除非 JSON 自身显式带了 type）
+            if (eventName && !ev.type) {
+              out.push({ ...ev, type: eventName });
+            } else {
+              out.push(ev);
+            }
           } else {
-            out.push({ type: "message", content: String(parsed) });
+            out.push({
+              type: eventName ?? "message",
+              content: String(parsed),
+            });
           }
         } catch {
-          out.push({ type: "delta", content: data });
+          out.push({ type: eventName ?? "delta", content: data });
         }
       }
       return out;

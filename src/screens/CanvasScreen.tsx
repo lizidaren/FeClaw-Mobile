@@ -93,11 +93,12 @@ export interface CanvasScreenProps {
 function extractStrokes(canvasData: CanvasData): Stroke[] {
   const out: Stroke[] = [];
   for (const b of canvasData.blocks) {
-    if (b.type === "ink" && b.data) {
-      const strokes = (b.data as { strokes?: unknown }).strokes;
-      if (Array.isArray(strokes)) {
-        out.push(...(strokes as Stroke[]));
-      }
+    if (b.type !== "ink") continue;
+    // fix(P0-2): 兜底读 content 兼容老数据；正常路径是 b.data（dict）
+    const d = blockDataToDict(b);
+    const strokes = d.strokes;
+    if (Array.isArray(strokes)) {
+      out.push(...(strokes as Stroke[]));
     }
   }
   return out;
@@ -107,15 +108,15 @@ function extractStrokes(canvasData: CanvasData): Stroke[] {
 function extractImages(canvasData: CanvasData): CanvasImage[] {
   const out: CanvasImage[] = [];
   for (const b of canvasData.blocks) {
-    if (b.type === "ink" && b.data) {
-      const imgs = (b.data as { images?: unknown }).images;
+    if (b.type === "ink") {
+      const d = blockDataToDict(b);
+      const imgs = d.images;
       if (Array.isArray(imgs)) {
         out.push(...(imgs as CanvasImage[]));
       }
-    } else if ((b.type === "photo" || b.type === "image") && b.data) {
-      const d = b.data as Record<string, unknown>;
-      const source =
-        (d.thumbnail_url as string) || (d.url as string);
+    } else if (b.type === "photo" || b.type === "image") {
+      const d = blockDataToDict(b);
+      const source = (d.thumbnail_url as string) || (d.url as string);
       if (source) {
         out.push({
           id: b.id,
@@ -137,8 +138,12 @@ function extractImages(canvasData: CanvasData): CanvasImage[] {
 function extractText(canvasData: CanvasData): string {
   const texts: string[] = [];
   for (const b of canvasData.blocks) {
-    if (b.type === "text" && b.text) {
-      texts.push(b.text);
+    if (b.type === "text") {
+      // fix(P0-2): text 字段直接读 b.text；同时也兜底从 data.text 读
+      const txt = b.text ?? (blockDataToDict(b).text as string | undefined);
+      if (typeof txt === "string" && txt.length > 0) {
+        texts.push(txt);
+      }
     }
   }
   return texts.join("\n");
@@ -148,11 +153,15 @@ function extractText(canvasData: CanvasData): string {
 function extractRichText(canvasData: CanvasData): IElement[] {
   const out: IElement[] = [];
   for (const b of canvasData.blocks) {
-    if (b.type !== "text" || !b.text) continue;
-    const raw = b.text.trim();
-    if (raw.startsWith("[")) {
+    if (b.type !== "text") continue;
+    // fix(P0-2): 优先读 b.text，data.elements 兜底
+    const d = blockDataToDict(b);
+    const raw = (b.text ?? (d.elements as unknown as string | undefined)) ?? "";
+    if (typeof raw !== "string" || raw.length === 0) continue;
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("[")) {
       try {
-        const parsed = JSON.parse(raw) as unknown;
+        const parsed = JSON.parse(trimmed) as unknown;
         if (Array.isArray(parsed)) {
           for (const item of parsed) {
             if (item && typeof item === "object" && "value" in item) {
@@ -166,9 +175,33 @@ function extractRichText(canvasData: CanvasData): IElement[] {
       }
     }
     // 纯文本 fallback
-    out.push({ value: b.text, size: 16 });
+    out.push({ value: raw, size: 16 });
   }
   return out;
+}
+
+/**
+ * fix(P0-2): 把后端 block 规整成 dict。
+ * 新数据是 `b.data`（dict），老数据可能塞在 `b.content`（JSON 字符串）。
+ * 统一从 dict 读字段，调用方不用关心后端用哪种形状。
+ */
+function blockDataToDict(b: unknown): Record<string, unknown> {
+  if (!b || typeof b !== "object") return {};
+  const obj = b as { data?: unknown; content?: unknown };
+  if (obj.data && typeof obj.data === "object" && !Array.isArray(obj.data)) {
+    return obj.data as Record<string, unknown>;
+  }
+  if (typeof obj.content === "string" && obj.content.trim().startsWith("{")) {
+    try {
+      const parsed = JSON.parse(obj.content) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // 解析失败，返回空 dict
+    }
+  }
+  return {};
 }
 
 /** 默认元数据（用于 standalone / dev 入口） */
@@ -330,6 +363,12 @@ export function CanvasScreen({
   // 若 N 毫秒后 keyboardVisible 仍为 false，弹"点这里开始打字"占位按钮让用户手动唤起。
   const [keyboardAutoOpened, setKeyboardAutoOpened] = useState(false);
   const [showKeyboardPrompt, setShowKeyboardPrompt] = useState(false);
+  // fix(P1-7): 放进 useFocusEffect deps 会导致 effect 每次 keyboardAutoOpened 变
+  // 都重建（即便还停留在画布上），引发定时器反复注册。改用 ref 在回调中读最新值。
+  const keyboardAutoOpenedRef = useRef(keyboardAutoOpened);
+  useEffect(() => {
+    keyboardAutoOpenedRef.current = keyboardAutoOpened;
+  }, [keyboardAutoOpened]);
 
   // ── 进入画布时自动唤起键盘（fix P1） ──
   // 流程：focus 屏幕 → 等 WebView ready → 调 editorRef.current?.focus() 唤起键盘
@@ -343,9 +382,13 @@ export function CanvasScreen({
       const FOCUS_RETRY_MS = 250;
       const PROMPT_TIMEOUT_MS = 1500;
       const startedAt = Date.now();
+      // fix(P2-7): cleanup 守卫 — 组件 unmount / focus blur 时所有 setTimeout
+      // 回调必须检查 cancelled，避免回调里 setState 已卸载的组件。
+      let cancelled = false;
 
       const tryFocus = () => {
-        if (keyboardAutoOpened) return;
+        if (cancelled) return;
+        if (keyboardAutoOpenedRef.current) return;
         if (editorReadyRef.current) {
           try {
             editorRef.current?.focus?.();
@@ -364,9 +407,12 @@ export function CanvasScreen({
       };
       const t = setTimeout(tryFocus, FOCUS_RETRY_MS);
       return () => {
+        cancelled = true;
         clearTimeout(t);
       };
-    }, [keyboardAutoOpened]),
+      // fix(P1-7): deps 里不放 keyboardAutoOpened，改用 ref 读最新值。
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []),
   );
 
   // 键盘没自动起来时，监听 keyboardDidShow 关闭占位
@@ -459,10 +505,12 @@ export function CanvasScreen({
     const latestStrokes = strokesRef.current;
     const latestMetadata = metadataRef.current;
     const blocks: Block[] = [];
+    // fix(P0-2): 后端 PUT/GET blocks 走 `data` 字段（dict），不再用 `content`（JSON 字符串）。
+    // 写 `data` 后服务端 serialize_block 不会双重 JSON 编码，extract* 读 b.data 也能命中。
     if (latestImages.length > 0 || latestStrokes.length > 0) {
       blocks.push({
         type: "ink",
-        content: JSON.stringify({
+        data: {
           strokes: latestStrokes,
           images: latestImages.map((img) => ({
             id: img.id,
@@ -475,10 +523,11 @@ export function CanvasScreen({
             zIndex: img.zIndex,
           })),
           metadata: latestMetadata,
-        }),
+        },
       });
     }
     if (textBlockContent) {
+      // text block: content 字段装 IElement[] JSON（保持向后兼容，extract* 仍读 b.text 优先）
       blocks.push({ type: "text", content: textBlockContent });
     }
     return blocks;
@@ -506,8 +555,9 @@ export function CanvasScreen({
     disposedRef.current = false;
     return () => {
       disposedRef.current = true;
-      // beforeRemove 已经成功保存过 → 不再重复
-      if (hasSavedRef.current || skipSaveRef.current) return;
+      // fix(P0-5): beforeRemove 正在保存中 → cleanup 不要再发一次。
+      // 否则快进快出场景（save 还没回 → 组件就卸载）会触发双写。
+      if (hasSavedRef.current || skipSaveRef.current || isSavingRef.current) return;
       // 没内容也没 entryId → 没必要保存
       const blocks = buildBlocks();
       if (blocks.length === 0 && !entryIdRef.current) return;
@@ -788,9 +838,10 @@ export function CanvasScreen({
         } catch {
           existing = [];
         }
+        // fix(P0-2): audio block 走 `data` 字段（dict），与 ink/text 保持一致。
         const audioBlock: Block = {
           type: "audio",
-          content: JSON.stringify({ url, mime, duration }),
+          data: { url, mime, duration },
         };
         const next = [...existing, audioBlock];
         await api.updateBlocks(targetId, next);
